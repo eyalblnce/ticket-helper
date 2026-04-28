@@ -9,6 +9,17 @@ from typing import Any
 import httpx
 
 
+def _parse_dt(val: str | None) -> datetime | None:
+    if not val:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(val, fmt).replace(tzinfo=None)
+        except ValueError:
+            continue
+    return None
+
+
 class FreshdeskError(Exception):
     def __init__(self, status: int, body: str) -> None:
         self.status = status
@@ -58,15 +69,24 @@ class FreshdeskClient:
     async def list_tickets(
         self,
         updated_since: datetime | None = None,
+        until: datetime | None = None,
+        order_by: str = "updated_at",
+        order_type: str = "desc",
         per_page: int = 100,
         max_pages: int = 300,
     ) -> list[dict[str, Any]]:
-        """Return tickets updated since a given time, handling pagination.
+        """Return tickets, handling pagination up to max_pages.
 
-        Always pass updated_since — without it Freshdesk returns all 30k+ tickets.
-        Status filtering is done in the DB, not at the API level.
+        updated_since: only tickets updated after this datetime
+        until: stop collecting tickets updated at or after this datetime (client-side cutoff)
+        order_by / order_type: Freshdesk sort params
         """
-        params: dict[str, Any] = {"per_page": per_page, "page": 1}
+        params: dict[str, Any] = {
+            "per_page": per_page,
+            "page": 1,
+            "order_by": order_by,
+            "order_type": order_type,
+        }
         if updated_since:
             params["updated_since"] = updated_since.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -75,7 +95,12 @@ class FreshdeskClient:
             page = await self._get("/tickets", params)
             if not page:
                 break
-            tickets.extend(page)
+            for t in page:
+                if until:
+                    t_updated = _parse_dt(t.get("updated_at"))
+                    if t_updated and t_updated >= until:
+                        return tickets  # past the window — done
+                tickets.append(t)
             if len(page) < per_page:
                 break
             params["page"] += 1

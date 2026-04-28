@@ -1,0 +1,78 @@
+{% if classification %}
+{% set color = category_color.get(classification.category, "gray") %}
+<div id="classification-panel">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-sm font-semibold text-gray-700">Classification</h3>
+    <button
+      hx-post="/tickets/{{ classification.ticket_id }}/classify"
+      hx-target="#classification-panel"
+      hx-swap="outerHTML"
+      hx-indicator="#cl-spinner"
+      class="text-xs text-blue-500 hover:underline">
+      ↻ Reclassify
+      <span id="cl-spinner" class="htmx-indicator text-gray-400"> …</span>
+    </button>
+  </div>
+
+  <div class="space-y-2 text-sm">
+    <div class="flex items-center gap-2">
+      <span class="text-gray-500 w-24 shrink-0">Category</span>
+      <span class="px-2 py-0.5 rounded-full text-xs font-semibold
+        {% if color == 'red' %}bg-red-100 text-red-700
+        {% elif color == 'blue' %}bg-blue-100 text-blue-700
+        {% elif color == 'purple' %}bg-purple-100 text-purple-700
+        {% elif color == 'indigo' %}bg-indigo-100 text-indigo-700
+        {% elif color == 'orange' %}bg-orange-100 text-orange-700
+        {% elif color == 'pink' %}bg-pink-100 text-pink-700
+        {% elif color == 'teal' %}bg-teal-100 text-teal-700
+        {% elif color == 'yellow' %}bg-yellow-100 text-yellow-700
+        {% else %}bg-gray-100 text-gray-600{% endif %}">
+        {{ classification.category.replace("_", " ") }}
+      </span>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <span class="text-gray-500 w-24 shrink-0">Urgency</span>
+      <div class="flex gap-0.5">
+        {% for i in range(1, 6) %}
+        <span class="w-3 h-3 rounded-sm {% if i <= classification.urgency %}bg-orange-400{% else %}bg-gray-200{% endif %}"></span>
+        {% endfor %}
+      </div>
+      <span class="text-gray-500 text-xs">{{ classification.urgency }}/5</span>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <span class="text-gray-500 w-24 shrink-0">Sentiment</span>
+      <span class="text-gray-700">
+        {% if classification.sentiment == "positive" %}😊 Positive
+        {% elif classification.sentiment == "negative" %}😟 Negative
+        {% else %}😐 Neutral{% endif %}
+      </span>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <span class="text-gray-500 w-24 shrink-0">Send via</span>
+      <span class="text-gray-700 font-medium">
+        {% if classification.suggested_destination == "balance_outbox" %}
+          Balance Outbox
+        {% else %}
+          Freshdesk Reply
+        {% endif %}
+      </span>
+    </div>
+
+    {% if classification.entities %}
+    <div class="pt-1 border-t border-gray-100">
+      <span class="text-gray-500 text-xs">Entities</span>
+      <div class="mt-1 space-y-0.5">
+        {% for k, v in classification.entities.items() %}
+        <div class="text-xs"><span class="text-gray-400">{{ k }}:</span> <span class="font-mono">{{ v }}</span></div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<div id="classification-panel" class="text-sm text-gray-400">No classification yet.</div>
+{% endif %}

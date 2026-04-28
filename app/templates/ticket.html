@@ -34,42 +34,55 @@
   </div>
 </div>
 
-<!-- Thread -->
-<div class="space-y-3">
-  {% if not conversations %}
-    <p class="text-sm text-gray-400">No conversation messages.</p>
-  {% endif %}
+<!-- Two-column layout: thread + classification -->
+<div class="flex gap-5 items-start">
 
-  {% for c in conversations %}
-    {% if c.direction == "private_note" %}
-    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-      <div class="flex items-center gap-2 mb-2 text-xs text-yellow-700 font-medium">
-        <span>🔒 Private note</span>
-        <span class="text-yellow-500">· {{ c.author_email }}</span>
-        <span class="text-yellow-400 ml-auto">{{ c.freshdesk_created_at.strftime("%b %d, %H:%M") if c.freshdesk_created_at else "" }}</span>
-      </div>
-      <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ c.body_text }}</p>
-    </div>
-
-    {% elif c.direction == "outbound" %}
-    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 ml-8">
-      <div class="flex items-center gap-2 mb-2 text-xs text-blue-600 font-medium">
-        <span>↑ Reply sent</span>
-        <span class="text-blue-400">· {{ c.author_email }}</span>
-        <span class="text-blue-400 ml-auto">{{ c.freshdesk_created_at.strftime("%b %d, %H:%M") if c.freshdesk_created_at else "" }}</span>
-      </div>
-      <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ c.body_text }}</p>
-    </div>
-
-    {% else %}
-    <div class="bg-white border border-gray-200 rounded-lg p-4">
-      <div class="flex items-center gap-2 mb-2 text-xs text-gray-500">
-        <span class="font-medium text-gray-700">{{ c.author_email or "Customer" }}</span>
-        <span class="ml-auto">{{ c.freshdesk_created_at.strftime("%b %d, %H:%M") if c.freshdesk_created_at else "" }}</span>
-      </div>
-      <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ c.body_text }}</p>
-    </div>
+  <!-- Thread (left, wider) -->
+  <div class="flex-1 min-w-0 space-y-3">
+    {% if not conversations %}
+      <p class="text-sm text-gray-400">No conversation messages.</p>
     {% endif %}
-  {% endfor %}
+
+    {% for c in conversations %}
+      {% if c.direction == "private_note" %}
+      <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+        <div class="flex items-center gap-2 mb-2 text-xs text-yellow-700 font-medium">
+          <span>🔒 Private note</span>
+          <span class="text-yellow-500">· {{ c.author_email }}</span>
+          <span class="text-yellow-400 ml-auto">{{ c.freshdesk_created_at.strftime("%b %d, %H:%M") if c.freshdesk_created_at else "" }}</span>
+        </div>
+        <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ c.body_text }}</p>
+      </div>
+
+      {% elif c.direction == "outbound" %}
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 ml-8">
+        <div class="flex items-center gap-2 mb-2 text-xs text-blue-600 font-medium">
+          <span>↑ Reply sent</span>
+          <span class="text-blue-400">· {{ c.author_email }}</span>
+          <span class="text-blue-400 ml-auto">{{ c.freshdesk_created_at.strftime("%b %d, %H:%M") if c.freshdesk_created_at else "" }}</span>
+        </div>
+        <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ c.body_text }}</p>
+      </div>
+
+      {% else %}
+      <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <div class="flex items-center gap-2 mb-2 text-xs text-gray-500">
+          <span class="font-medium text-gray-700">{{ c.author_email or "Customer" }}</span>
+          <span class="ml-auto">{{ c.freshdesk_created_at.strftime("%b %d, %H:%M") if c.freshdesk_created_at else "" }}</span>
+        </div>
+        <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ c.body_text }}</p>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  <!-- Right panel -->
+  <div class="w-64 shrink-0 space-y-4">
+    <!-- Classification -->
+    <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+      {% include "partials/_classification.html" %}
+    </div>
+  </div>
+
 </div>
 {% endblock %}

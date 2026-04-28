@@ -18,6 +18,18 @@ class Ticket(SQLModel, table=True):
     raw_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
+class Classification(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    ticket_id: int = Field(index=True, foreign_key="ticket.id")
+    category: str = ""
+    urgency: int = 3              # 1–5
+    sentiment: str = "neutral"   # positive | neutral | negative
+    suggested_destination: str = "freshdesk_reply"
+    entities: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    model: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Conversation(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     freshdesk_id: int = Field(unique=True, index=True)

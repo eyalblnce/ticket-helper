@@ -5,3 +5,4 @@ __pycache__/
 .env
 dev.db
 *.db
+data/

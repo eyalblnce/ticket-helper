@@ -74,12 +74,14 @@ class FreshdeskClient:
         order_type: str = "desc",
         per_page: int = 100,
         max_pages: int = 300,
+        include: str | None = "description",
     ) -> list[dict[str, Any]]:
         """Return tickets, handling pagination up to max_pages.
 
         updated_since: only tickets updated after this datetime
         until: stop collecting tickets updated at or after this datetime (client-side cutoff)
         order_by / order_type: Freshdesk sort params
+        include: comma-separated Freshdesk includes (default "description" for description_text)
         """
         params: dict[str, Any] = {
             "per_page": per_page,
@@ -89,6 +91,8 @@ class FreshdeskClient:
         }
         if updated_since:
             params["updated_since"] = updated_since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if include:
+            params["include"] = include
 
         tickets: list[dict[str, Any]] = []
         while params["page"] <= max_pages:

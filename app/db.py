@@ -20,6 +20,7 @@ def _migrate() -> None:
     """Idempotent column additions for SQLite (no Alembic yet)."""
     additions = [
         ("classification", "sender_type", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("classification", "team",        "TEXT NOT NULL DEFAULT ''"),
     ]
     with engine.connect() as conn:
         for table, col, definition in additions:

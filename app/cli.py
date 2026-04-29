@@ -92,6 +92,35 @@ def download(
 
 
 @app.command()
+def download_freshchat(
+    skip_messages: Annotated[bool, typer.Option("--skip-messages", help="Download conversations only, skip messages")] = False,
+) -> None:
+    """Download Freshchat conversations (and messages) to data/."""
+    from app.config import settings
+    from app.services.freshchat_downloader import (
+        FC_CONVERSATIONS_FILE,
+        FC_MESSAGES_FILE,
+        download_fc_conversations,
+        download_fc_messages,
+    )
+
+    if not settings.freshchat_token or not settings.freshchat_domain:
+        typer.echo("Error: FRESHCHAT_TOKEN and FRESHCHAT_DOMAIN must be set in .env", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("=== Phase 1: Conversations ===")
+    result = asyncio.run(download_fc_conversations())
+    typer.echo(f"Done — {result['conversations']} new conversations written to {FC_CONVERSATIONS_FILE} ({result['pages']} pages fetched).")
+
+    if not skip_messages:
+        typer.echo("\n=== Phase 2: Messages ===")
+        count = asyncio.run(download_fc_messages())
+        typer.echo(f"Done — {count} message batches written to {FC_MESSAGES_FILE}.")
+    else:
+        typer.echo("Messages skipped (--skip-messages).")
+
+
+@app.command()
 def classify(
     force: Annotated[bool, typer.Option("--force", help="Re-classify already-classified tickets")] = False,
 ) -> None:

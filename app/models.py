@@ -27,6 +27,7 @@ class Classification(SQLModel, table=True):
     suggested_destination: str = "freshdesk_reply"
     entities: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     sender_type: str = "unknown"   # merchant | buyer | unknown
+    team: str = ""                 # collections | risk | payment_ops | other
     model: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

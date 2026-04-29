@@ -42,7 +42,7 @@
     <label class="text-xs font-medium text-gray-500">Subject / Merchant / Requester</label>
     <input
       type="text" name="q" value="{{ filter_q }}"
-      placeholder="Subject, merchant name, or email…"
+      placeholder="Ticket #, subject, email, or keywords…"
       class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
   </div>
 
@@ -79,6 +79,20 @@
       {% for cat in all_categories %}
       <option value="{{ cat }}" {% if filter_category == cat %}selected{% endif %}>
         {{ cat.replace("_", " ").title() }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <!-- Team -->
+  <div class="flex flex-col gap-1">
+    <label class="text-xs font-medium text-gray-500">Team</label>
+    <select name="team"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+      <option value="">All</option>
+      {% for t in all_teams %}
+      <option value="{{ t }}" {% if filter_team == t %}selected{% endif %}>
+        {{ t.replace("_", " ").title() }}
       </option>
       {% endfor %}
     </select>
@@ -129,6 +143,7 @@
         <th class="px-4 py-3 text-left font-medium text-gray-600 w-16">#</th>
         <th class="px-4 py-3 text-left font-medium text-gray-600">Subject</th>
         <th class="px-4 py-3 text-left font-medium text-gray-600 w-36">Category</th>
+        <th class="px-4 py-3 text-left font-medium text-gray-600 w-28">Team</th>
         <th class="px-4 py-3 text-left font-medium text-gray-600 w-24">Sender</th>
         <th class="px-4 py-3 text-left font-medium text-gray-600 w-48">Requester</th>
         <th class="px-4 py-3 text-left font-medium text-gray-600 w-24">Priority</th>
@@ -162,6 +177,20 @@
               {% elif color == 'yellow' %}bg-yellow-100 text-yellow-700
               {% else %}bg-gray-100 text-gray-600{% endif %}">
               {{ cl.category.replace("_", " ") }}
+            </span>
+          {% else %}
+            <span class="text-gray-300 text-xs">—</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-3">
+          {% if cl and cl.team %}
+            {% set tcolor = team_color.get(cl.team, "gray") %}
+            <span class="px-2 py-0.5 rounded-full text-xs font-medium
+              {% if tcolor == 'amber' %}bg-amber-100 text-amber-700
+              {% elif tcolor == 'red' %}bg-red-100 text-red-700
+              {% elif tcolor == 'blue' %}bg-blue-100 text-blue-700
+              {% else %}bg-gray-100 text-gray-600{% endif %}">
+              {{ cl.team.replace("_", " ").title() }}
             </span>
           {% else %}
             <span class="text-gray-300 text-xs">—</span>

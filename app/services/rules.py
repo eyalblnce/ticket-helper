@@ -145,6 +145,23 @@ def classify_sentiment(body: str) -> str:
 
 PAYMENT_CATEGORIES = {"payment_status", "payment_failed", "invoice_question", "credit_limit_question"}
 
+COLLECTIONS_CATEGORIES = {"payment_status", "invoice_question"}
+RISK_CATEGORIES = {"credit_limit_question"}
+PAYMENT_OPS_CATEGORIES = {"payment_failed"}
+
+
+def assign_team(category: str, is_suspended: bool) -> str:
+    """Assign the internal handling team based on category and buyer suspension status."""
+    if is_suspended:
+        return "risk" if category in RISK_CATEGORIES else "collections"
+    if category in COLLECTIONS_CATEGORIES:
+        return "collections"
+    if category in RISK_CATEGORIES:
+        return "risk"
+    if category in PAYMENT_OPS_CATEGORIES:
+        return "payment_ops"
+    return "other"
+
 
 def classify_ticket(
     subject: str,

@@ -16,6 +16,12 @@ templates = Jinja2Templates(directory="app/templates")
 FRESHDESK_STATUS = {2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed"}
 FRESHDESK_PRIORITY = {1: "Low", 2: "Medium", 3: "High", 4: "Urgent"}
 PRIORITY_COLOR = {1: "gray", 2: "yellow", 3: "orange", 4: "red"}
+TEAM_COLOR = {
+    "collections": "amber",
+    "risk":         "red",
+    "payment_ops":  "blue",
+    "other":        "gray",
+}
 CATEGORY_COLOR = {
     "shipping_status":       "blue",
     "invoice_question":      "purple",
@@ -80,7 +86,7 @@ async def reclassify(
     return templates.TemplateResponse(
         request,
         "partials/_classification.html",
-        {"classification": classification, "category_color": CATEGORY_COLOR, "ticket": ticket},
+        {"classification": classification, "category_color": CATEGORY_COLOR, "team_color": TEAM_COLOR, "ticket": ticket},
     )
 
 
@@ -122,6 +128,7 @@ def _ctx(
         "priority_label": FRESHDESK_PRIORITY.get(ticket.priority, "?"),
         "priority_color": PRIORITY_COLOR.get(ticket.priority, "gray"),
         "category_color": CATEGORY_COLOR,
+        "team_color": TEAM_COLOR,
         "requester_email": email,
         "cf_entity_type": cf.get("cf_entity_type") or "",
         "cf_company_name": cf.get("cf_company_name") or "",

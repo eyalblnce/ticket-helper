@@ -1,6 +1,7 @@
 """Freshchat v2 REST API client."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -25,10 +26,17 @@ class FreshchatClient:
         await self._client.aclose()
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        r = await self._client.get(f"{self._base}{path}", params=params)
-        if r.status_code != 200:
-            raise FreshchatError(r.status_code, r.text)
-        return r.json()
+        for attempt in range(3):
+            r = await self._client.get(f"{self._base}{path}", params=params)
+            if r.status_code == 429:
+                retry_after = int(r.headers.get("Retry-After", 60))
+                print(f"  rate limited — waiting {retry_after}s (attempt {attempt + 1}/3)")
+                await asyncio.sleep(retry_after)
+                continue
+            if r.status_code != 200:
+                raise FreshchatError(r.status_code, r.text)
+            return r.json()
+        raise FreshchatError(429, "rate limit exceeded after retries")
 
     # --- Conversation methods ---
 

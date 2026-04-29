@@ -3,11 +3,11 @@ import math
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlmodel import Session, func, select
+from sqlmodel import Session, func, or_, select
 
 from app.config import settings
 from app.db import get_session
-from app.models import Classification, Ticket
+from app.models import Classification, Conversation, Ticket
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -30,6 +30,13 @@ ALL_CATEGORIES = list(CATEGORY_COLOR.keys())
 
 
 FRESHDESK_STATUS = {2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed"}
+TEAM_COLOR = {
+    "collections": "amber",
+    "risk":         "red",
+    "payment_ops":  "blue",
+    "other":        "gray",
+}
+ALL_TEAMS = list(TEAM_COLOR.keys())
 PER_PAGE = 50
 
 
@@ -41,6 +48,7 @@ async def inbox(
     priority: str = Query(default=""),
     category: str = Query(default=""),
     sender_type: str = Query(default=""),
+    team: str = Query(default=""),
     status: str = Query(default="2"),
     page: int = Query(default=1),
 ):
@@ -51,10 +59,7 @@ async def inbox(
     if status:
         stmt = stmt.where(Ticket.status == int(status))
     if q:
-        like = f"%{q}%"
-        stmt = stmt.where(
-            (Ticket.subject.ilike(like)) | (Ticket.requester_email.ilike(like)) | (Ticket.requester_name.ilike(like))
-        )
+        stmt = _apply_search(stmt, q)
     if priority_int:
         stmt = stmt.where(Ticket.priority == priority_int)
     if category:
@@ -62,6 +67,9 @@ async def inbox(
         stmt = stmt.where(Ticket.id.in_(sub))
     if sender_type:
         sub = select(Classification.ticket_id).where(Classification.sender_type == sender_type)
+        stmt = stmt.where(Ticket.id.in_(sub))
+    if team:
+        sub = select(Classification.ticket_id).where(Classification.team == team)
         stmt = stmt.where(Ticket.id.in_(sub))
 
     total = session.exec(select(func.count()).select_from(stmt.subquery())).one()
@@ -91,11 +99,14 @@ async def inbox(
             "priority_labels": FRESHDESK_PRIORITY,
             "category_color": CATEGORY_COLOR,
             "all_categories": ALL_CATEGORIES,
+            "team_color": TEAM_COLOR,
+            "all_teams": ALL_TEAMS,
             "status_labels": FRESHDESK_STATUS,
             "filter_q": q,
             "filter_priority": priority_int,
             "filter_category": category,
             "filter_sender_type": sender_type,
+            "filter_team": team,
             "freshdesk_base": f"https://{settings.freshdesk_domain}",
             "filter_status": status,
             "page": page,
@@ -104,3 +115,26 @@ async def inbox(
             "per_page": PER_PAGE,
         },
     )
+
+
+def _apply_search(stmt, q: str):
+    """Apply search to a Ticket query.
+
+    - Bare number → match freshdesk_id exactly (fast shortcut).
+    - Otherwise split into words and require each to appear in at least one of:
+      subject, requester_email, requester_name, or any conversation body.
+    """
+    stripped = q.strip()
+    if stripped.isdigit():
+        return stmt.where(Ticket.freshdesk_id == int(stripped))
+
+    for word in stripped.split():
+        like = f"%{word}%"
+        conv_sub = select(Conversation.ticket_id).where(Conversation.body_text.ilike(like))
+        stmt = stmt.where(or_(
+            Ticket.subject.ilike(like),
+            Ticket.requester_email.ilike(like),
+            Ticket.requester_name.ilike(like),
+            Ticket.id.in_(conv_sub),
+        ))
+    return stmt

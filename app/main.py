@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.db import create_tables
+from app.routes.dashboard import router as dashboard_router
 from app.routes.inbox import router as inbox_router
 from app.routes.ticket import router as ticket_router
 from app.services.poller import run_poller
@@ -28,3 +29,4 @@ app = FastAPI(title="Support Co-Pilot", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(inbox_router)
 app.include_router(ticket_router)
+app.include_router(dashboard_router)

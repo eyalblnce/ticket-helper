@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 
 from app.agents.classifier import classify
 from app.config import settings
+from app.services.rules import classify_ticket
 from app.db import get_session
 from app.models import Classification, Conversation, Ticket
 from app.services.freshdesk import FreshdeskClient
@@ -45,7 +46,9 @@ async def ticket_detail(
         .order_by(Classification.created_at.desc())
     ).first()
 
-    if not classification and settings.anthropic_api_key:
+    if not classification:
+        classification = _run_rule_classify(ticket, conversations, session)
+    if settings.anthropic_api_key and classification.model == "rules-v1":
         classification = await _run_classify(ticket, conversations, session)
 
     return templates.TemplateResponse(
@@ -116,6 +119,26 @@ async def _ensure_ticket(
     return ticket, list(conversations)
 
 
+def _run_rule_classify(
+    ticket: Ticket, conversations: list[Conversation], session: Session
+) -> Classification:
+    body = next((c.body_text for c in conversations if c.direction == "inbound"), "")
+    payload = ticket.raw_payload or {}
+    result = classify_ticket(
+        subject=ticket.subject,
+        body=body,
+        requester_email=ticket.requester_email,
+        priority=ticket.priority,
+        tags=payload.get("tags") or [],
+        source=payload.get("source"),
+    )
+    cl = Classification(ticket_id=ticket.id, **result)
+    session.add(cl)
+    session.commit()
+    session.refresh(cl)
+    return cl
+
+
 async def _run_classify(
     ticket: Ticket, conversations: list[Conversation], session: Session
 ) -> Classification:
@@ -130,6 +153,7 @@ async def _run_classify(
         urgency=result.urgency,
         sentiment=result.sentiment,
         suggested_destination=result.suggested_destination,
+        sender_type=result.sender_type,
         entities=result.entities.model_dump(exclude_none=True),
         model="claude-sonnet-4-6",
     )

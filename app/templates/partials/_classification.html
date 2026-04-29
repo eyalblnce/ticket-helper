@@ -2,7 +2,9 @@
 {% set color = category_color.get(classification.category, "gray") %}
 <div id="classification-panel">
   <div class="flex items-center justify-between mb-3">
-    <h3 class="text-sm font-semibold text-gray-700">Classification</h3>
+    <h3 class="text-sm font-semibold text-gray-700">Classification
+      <span class="ml-1 text-xs font-normal text-gray-400">{{ classification.model }}</span>
+    </h3>
     <button
       hx-post="/tickets/{{ classification.ticket_id }}/classify"
       hx-target="#classification-panel"
@@ -48,6 +50,17 @@
         {% elif classification.sentiment == "negative" %}😟 Negative
         {% else %}😐 Neutral{% endif %}
       </span>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <span class="text-gray-500 w-24 shrink-0">Sender</span>
+      {% if classification.sender_type == "merchant" %}
+        <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-violet-100 text-violet-700">🏢 Merchant</span>
+      {% elif classification.sender_type == "buyer" %}
+        <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-cyan-100 text-cyan-700">🛒 Buyer</span>
+      {% else %}
+        <span class="text-gray-400 text-xs">Unknown</span>
+      {% endif %}
     </div>
 
     <div class="flex items-center gap-2">

@@ -28,6 +28,14 @@ Categories:
 
 Urgency scale: 1=low, 2=low-medium, 3=medium, 4=high, 5=critical/urgent
 
+Sender type — who sent this ticket:
+- merchant: a business that uses Balance to offer payment terms to their buyers.
+  Signals: email domain matches a known B2B seller, asks about their own account settings,
+  buyer management, integration issues, or outbound invoicing.
+- buyer: a company that buys from a Balance merchant on net terms.
+  Signals: asks about their own invoice, payment due date, credit limit, or order they placed.
+- unknown: cannot determine from the available text.
+
 Suggested destination:
 - balance_outbox: use for payment_status, payment_failed, invoice_question, credit_limit_question
 - freshdesk_reply: use for everything else
@@ -61,6 +69,7 @@ class TicketClassification(BaseModel):
     urgency: int
     sentiment: Literal["positive", "neutral", "negative"]
     suggested_destination: Literal["freshdesk_reply", "balance_outbox"]
+    sender_type: Literal["merchant", "buyer", "unknown"]
     entities: ExtractedEntities
 
 

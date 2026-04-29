@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — Support Co-Pilot{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-xl font-semibold">Dashboard</h1>
+</div>
+
+<!-- Filters -->
+<form method="get" action="/dashboard"
+  class="bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-6 flex flex-wrap gap-3 items-end">
+
+  <div class="flex flex-col gap-1 flex-1 min-w-40">
+    <label class="text-xs font-medium text-gray-500">Merchant / Requester</label>
+    <input type="text" name="q" value="{{ filter_q }}"
+      placeholder="Name or email…"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+  </div>
+
+  <div class="flex flex-col gap-1">
+    <label class="text-xs font-medium text-gray-500">Status</label>
+    <select name="status"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+      <option value="">All</option>
+      <option value="open"   {% if filter_status == "open"   %}selected{% endif %}>Open</option>
+      <option value="closed" {% if filter_status == "closed" %}selected{% endif %}>Closed</option>
+    </select>
+  </div>
+
+  <div class="flex flex-col gap-1">
+    <label class="text-xs font-medium text-gray-500">Sender</label>
+    <select name="sender_type"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+      <option value="">All</option>
+      <option value="merchant" {% if filter_sender_type == "merchant" %}selected{% endif %}>🏢 Merchant</option>
+      <option value="buyer"    {% if filter_sender_type == "buyer"    %}selected{% endif %}>🛒 Buyer</option>
+    </select>
+  </div>
+
+  <div class="flex gap-2">
+    <button type="submit"
+      class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">Filter</button>
+    {% if filter_status or filter_sender_type or filter_q %}
+    <a href="/dashboard" class="px-4 py-1.5 bg-gray-100 text-gray-600 text-sm rounded hover:bg-gray-200">Clear</a>
+    {% endif %}
+  </div>
+</form>
+
+<!-- Active filter chips -->
+{% if filter_status or filter_sender_type or filter_q %}
+<div class="flex gap-2 mb-4 flex-wrap">
+  {% if filter_q %}<span class="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-200">"{{ filter_q }}"</span>{% endif %}
+  {% if filter_status %}<span class="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-200">{{ filter_status.title() }}</span>{% endif %}
+  {% if filter_sender_type %}<span class="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-200">{{ filter_sender_type.title() }}</span>{% endif %}
+</div>
+{% endif %}
+
+<!-- Summary cards -->
+<div class="grid grid-cols-3 gap-4 mb-6">
+  <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-5">
+    <div class="text-sm text-gray-500 mb-1">Total (last {{ days }} days)</div>
+    <div class="text-3xl font-bold text-gray-900">{{ total }}</div>
+  </div>
+  <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-5">
+    <div class="text-sm text-gray-500 mb-1">Daily average</div>
+    <div class="text-3xl font-bold text-gray-900">{{ avg }}</div>
+  </div>
+  <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-5">
+    <div class="text-sm text-gray-500 mb-1">Peak day</div>
+    <div class="text-3xl font-bold text-gray-900">{{ peak }}</div>
+  </div>
+</div>
+
+<!-- Tickets per day -->
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-6">
+  <h2 class="text-sm font-semibold text-gray-700 mb-4">Tickets created per day — last {{ days }} days</h2>
+  <canvas id="ticketChart" height="90"></canvas>
+</div>
+
+<!-- Day of week + Hour of day side by side -->
+<div class="grid grid-cols-2 gap-6 mb-6">
+
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6">
+  <h2 class="text-sm font-semibold text-gray-700 mb-4">Tickets by day of week</h2>
+  <canvas id="dowChart" height="140"></canvas>
+</div>
+
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6">
+  <div class="flex items-start justify-between mb-4">
+    <div>
+      <h2 class="text-sm font-semibold text-gray-700">Tickets by hour of day</h2>
+      <p class="text-xs text-gray-400 mt-0.5">Peak window: <span class="font-medium text-gray-600">{{ heuristic }}</span></p>
+    </div>
+  </div>
+  <canvas id="hourChart" height="140"></canvas>
+</div>
+
+</div><!-- end grid -->
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  // --- Daily chart ---
+  const labels = {{ labels | tojson }};
+  const values = {{ values | tojson }};
+  const shortLabels = labels.map(d => {
+    const [y, m, day] = d.split("-");
+    return new Date(y, m - 1, day).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  });
+
+  new Chart(document.getElementById("ticketChart"), {
+    type: "bar",
+    data: {
+      labels: shortLabels,
+      datasets: [{
+        label: "Tickets",
+        data: values,
+        backgroundColor: "rgba(99, 102, 241, 0.7)",
+        borderColor: "rgba(99, 102, 241, 1)",
+        borderWidth: 1,
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { title: (items) => labels[items[0].dataIndex] } } },
+      scales: {
+        y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: "rgba(0,0,0,0.05)" } },
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, maxRotation: 0 } }
+      }
+    }
+  });
+
+  // --- Day-of-week chart ---
+  const dowLabels = {{ dow_labels | tojson }};
+  const dowValues = {{ dow_values | tojson }};
+  const maxDow = Math.max(...dowValues);
+  const dowColors = dowValues.map((v, i) =>
+    v === maxDow && v > 0 ? "rgba(239, 68, 68, 0.8)"
+    : i < 5 ? "rgba(99, 102, 241, 0.7)"   // weekdays = indigo
+    : "rgba(156, 163, 175, 0.5)"           // weekend = gray
+  );
+
+  new Chart(document.getElementById("dowChart"), {
+    type: "bar",
+    data: {
+      labels: dowLabels,
+      datasets: [{ label: "Tickets", data: dowValues, backgroundColor: dowColors, borderWidth: 0, borderRadius: 4 }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: "rgba(0,0,0,0.05)" } },
+        x: { grid: { display: false } }
+      }
+    }
+  });
+
+  // --- Hour-of-day chart ---
+  const hourLabels = {{ hour_labels | tojson }};
+  const hourValues = {{ hour_values | tojson }};
+  const peakHour  = {{ peak_hour }};
+  const maxVal    = Math.max(...hourValues);
+
+  const hourColors = hourValues.map((v, i) => {
+    if (v === maxVal && v > 0) return "rgba(239, 68, 68, 0.8)";   // peak = red
+    if (i >= 9 && i <= 17)    return "rgba(99, 102, 241, 0.7)";   // business hours = indigo
+    return "rgba(156, 163, 175, 0.5)";                             // off-hours = gray
+  });
+
+  new Chart(document.getElementById("hourChart"), {
+    type: "bar",
+    data: {
+      labels: hourLabels,
+      datasets: [{
+        label: "Tickets",
+        data: hourValues,
+        backgroundColor: hourColors,
+        borderWidth: 0,
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const h = items[0].dataIndex;
+              return `${String(h).padStart(2,"0")}:00 – ${String(h+1).padStart(2,"0")}:00`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: "rgba(0,0,0,0.05)" } },
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } }
+      }
+    }
+  });
+</script>
+{% endblock %}

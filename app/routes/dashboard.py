@@ -15,12 +15,20 @@ templates = Jinja2Templates(directory="app/templates")
 DAYS = 30
 
 
+ALL_CATEGORIES = [
+    "shipping_status", "invoice_question", "payment_status", "payment_failed",
+    "credit_limit_question", "refund_request", "return_request",
+    "damaged_or_wrong_item", "product_question", "account_access", "other",
+]
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
     session: Session = Depends(get_session),
     status: str = Query(default=""),          # "" = all, "2" = open, "closed" = 4+5
     sender_type: str = Query(default=""),     # "" | "merchant" | "buyer"
+    category: str = Query(default=""),        # "" | any category slug
     q: str = Query(default=""),               # merchant / requester name search
 ):
     since = _days_ago(DAYS)
@@ -34,7 +42,7 @@ async def dashboard(
         .where(Ticket.freshdesk_created_at >= since)
     )
 
-    stmt = _apply_filters(stmt, status, sender_type, q)
+    stmt = _apply_filters(stmt, status, sender_type, category, q)
     stmt = stmt.group_by("day").order_by("day")
 
     rows = session.exec(stmt).all()
@@ -59,7 +67,7 @@ async def dashboard(
         )
         .where(Ticket.freshdesk_created_at >= since)
     )
-    hour_stmt = _apply_filters(hour_stmt, status, sender_type, q)
+    hour_stmt = _apply_filters(hour_stmt, status, sender_type, category, q)
     hour_stmt = hour_stmt.group_by("hour").order_by("hour")
     hour_rows = session.exec(hour_stmt).all()
 
@@ -77,7 +85,7 @@ async def dashboard(
         )
         .where(Ticket.freshdesk_created_at >= since)
     )
-    dow_stmt = _apply_filters(dow_stmt, status, sender_type, q)
+    dow_stmt = _apply_filters(dow_stmt, status, sender_type, category, q)
     dow_stmt = dow_stmt.group_by("dow").order_by("dow")
     dow_rows = session.exec(dow_stmt).all()
 
@@ -85,6 +93,18 @@ async def dashboard(
     dow_order = [1, 2, 3, 4, 5, 6, 0]          # Mon–Sun
     dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     dow_values = [counts_by_dow.get(d, 0) for d in dow_order]
+
+    # Category distribution
+    cat_stmt = (
+        select(Classification.category, func.count(Classification.id).label("count"))
+        .where(Ticket.freshdesk_created_at >= since)
+        .join(Ticket, Ticket.id == Classification.ticket_id)
+    )
+    cat_stmt = _apply_filters(cat_stmt, status, sender_type, category, q)
+    cat_stmt = cat_stmt.group_by(Classification.category).order_by(func.count(Classification.id).desc())
+    cat_rows = session.exec(cat_stmt).all()
+    cat_labels = [r.category.replace("_", " ").title() for r in cat_rows]
+    cat_values = [r.count for r in cat_rows]
 
     return templates.TemplateResponse(
         request,
@@ -104,12 +124,15 @@ async def dashboard(
             "dow_values": dow_values,
             "filter_status": status,
             "filter_sender_type": sender_type,
+            "filter_category": category,
             "filter_q": q,
+            "all_categories": ALL_CATEGORIES,
+            "cat_data": list(zip(cat_labels, cat_values)),
         },
     )
 
 
-def _apply_filters(stmt, status: str, sender_type: str, q: str):
+def _apply_filters(stmt, status: str, sender_type: str, category: str, q: str):
     if status == "open":
         stmt = stmt.where(Ticket.status == 2)
     elif status == "closed":
@@ -122,10 +145,11 @@ def _apply_filters(stmt, status: str, sender_type: str, q: str):
         )
 
     if sender_type:
-        # Subquery: ticket IDs that have a matching classification
-        sub = select(Classification.ticket_id).where(
-            Classification.sender_type == sender_type
-        )
+        sub = select(Classification.ticket_id).where(Classification.sender_type == sender_type)
+        stmt = stmt.where(Ticket.id.in_(sub))
+
+    if category:
+        sub = select(Classification.ticket_id).where(Classification.category == category)
         stmt = stmt.where(Ticket.id.in_(sub))
 
     return stmt

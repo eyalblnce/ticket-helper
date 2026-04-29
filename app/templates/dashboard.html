@@ -38,21 +38,35 @@
     </select>
   </div>
 
+  <div class="flex flex-col gap-1">
+    <label class="text-xs font-medium text-gray-500">Category</label>
+    <select name="category"
+      class="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+      <option value="">All</option>
+      {% for cat in all_categories %}
+      <option value="{{ cat }}" {% if filter_category == cat %}selected{% endif %}>
+        {{ cat.replace("_", " ").title() }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+
   <div class="flex gap-2">
     <button type="submit"
       class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">Filter</button>
-    {% if filter_status or filter_sender_type or filter_q %}
+    {% if filter_status or filter_sender_type or filter_category or filter_q %}
     <a href="/dashboard" class="px-4 py-1.5 bg-gray-100 text-gray-600 text-sm rounded hover:bg-gray-200">Clear</a>
     {% endif %}
   </div>
 </form>
 
 <!-- Active filter chips -->
-{% if filter_status or filter_sender_type or filter_q %}
+{% if filter_status or filter_sender_type or filter_category or filter_q %}
 <div class="flex gap-2 mb-4 flex-wrap">
   {% if filter_q %}<span class="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-200">"{{ filter_q }}"</span>{% endif %}
   {% if filter_status %}<span class="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-200">{{ filter_status.title() }}</span>{% endif %}
   {% if filter_sender_type %}<span class="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-200">{{ filter_sender_type.title() }}</span>{% endif %}
+  {% if filter_category %}<span class="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full border border-blue-200">{{ filter_category.replace("_", " ").title() }}</span>{% endif %}
 </div>
 {% endif %}
 
@@ -78,8 +92,29 @@
   <canvas id="ticketChart" height="90"></canvas>
 </div>
 
-<!-- Day of week + Hour of day side by side -->
+<!-- Category distribution + Day of week + Hour of day -->
 <div class="grid grid-cols-2 gap-6 mb-6">
+
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6 flex flex-col">
+  <h2 class="text-sm font-semibold text-gray-700 mb-4">Category distribution</h2>
+  <div class="flex gap-6 items-center flex-1">
+    <div class="w-44 shrink-0">
+      <canvas id="catChart"></canvas>
+    </div>
+    <ul class="text-xs text-gray-600 space-y-1 min-w-0">
+      {% for label, value in cat_data %}
+      <li class="flex items-center gap-1.5 truncate">
+        <span class="cat-swatch inline-block w-2.5 h-2.5 rounded-sm shrink-0" data-idx="{{ loop.index0 }}"></span>
+        <span class="truncate">{{ label }}</span>
+        <span class="ml-auto pl-2 font-medium text-gray-800 shrink-0">{{ value }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<!-- Day of week + Hour of day side by side -->
+<div class="grid grid-cols-1 gap-6">
 
 <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6">
   <h2 class="text-sm font-semibold text-gray-700 mb-4">Tickets by day of week</h2>
@@ -96,10 +131,43 @@
   <canvas id="hourChart" height="140"></canvas>
 </div>
 
-</div><!-- end grid -->
+</div><!-- end inner grid -->
+</div><!-- end outer grid -->
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
+  // --- Category donut ---
+  const catData = {{ cat_data | tojson }};
+  const catPalette = [
+    "#6366f1","#8b5cf6","#ec4899","#f97316","#eab308",
+    "#22c55e","#14b8a6","#3b82f6","#ef4444","#a855f7","#94a3b8",
+  ];
+  const catChart = new Chart(document.getElementById("catChart"), {
+    type: "doughnut",
+    data: {
+      labels: catData.map(d => d[0]),
+      datasets: [{
+        data: catData.map(d => d[1]),
+        backgroundColor: catPalette.slice(0, catData.length),
+        borderWidth: 2,
+        borderColor: "#fff",
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      responsive: true,
+      cutout: "65%",
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (i) => ` ${i.parsed} tickets` } },
+      },
+    }
+  });
+  // Colour the legend swatches to match
+  document.querySelectorAll(".cat-swatch").forEach(el => {
+    el.style.backgroundColor = catPalette[+el.dataset.idx] ?? "#94a3b8";
+  });
+
   // --- Daily chart ---
   const labels = {{ labels | tojson }};
   const values = {{ values | tojson }};

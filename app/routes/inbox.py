@@ -1,7 +1,9 @@
+import math
+
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
 from app.config import settings
 from app.db import get_session
@@ -28,6 +30,7 @@ ALL_CATEGORIES = list(CATEGORY_COLOR.keys())
 
 
 FRESHDESK_STATUS = {2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed"}
+PER_PAGE = 50
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -38,36 +41,46 @@ async def inbox(
     priority: str = Query(default=""),
     category: str = Query(default=""),
     sender_type: str = Query(default=""),
-    status: int = Query(default=2),
+    status: str = Query(default="2"),
+    page: int = Query(default=1),
 ):
-    stmt = select(Ticket).where(Ticket.status == status)
+    priority_int = int(priority) if priority else None
 
+    # Build filtered query entirely in DB
+    stmt = select(Ticket)
+    if status:
+        stmt = stmt.where(Ticket.status == int(status))
     if q:
         like = f"%{q}%"
         stmt = stmt.where(
             (Ticket.subject.ilike(like)) | (Ticket.requester_email.ilike(like)) | (Ticket.requester_name.ilike(like))
         )
-    priority_int = int(priority) if priority else None
     if priority_int:
         stmt = stmt.where(Ticket.priority == priority_int)
-
-    stmt = stmt.order_by(Ticket.freshdesk_updated_at.desc())
-    tickets = session.exec(stmt).all()
-
-    # Latest classification per ticket
-    all_cls = session.exec(select(Classification)).all()
-    classifications: dict[int, Classification] = {}
-    for cl in all_cls:
-        if cl.ticket_id not in classifications or cl.created_at > classifications[cl.ticket_id].created_at:
-            classifications[cl.ticket_id] = cl
-
-    # Client-side filters that join against classifications
     if category:
-        matching = {tid for tid, cl in classifications.items() if cl.category == category}
-        tickets = [t for t in tickets if t.id in matching]
+        sub = select(Classification.ticket_id).where(Classification.category == category)
+        stmt = stmt.where(Ticket.id.in_(sub))
     if sender_type:
-        matching = {tid for tid, cl in classifications.items() if cl.sender_type == sender_type}
-        tickets = [t for t in tickets if t.id in matching]
+        sub = select(Classification.ticket_id).where(Classification.sender_type == sender_type)
+        stmt = stmt.where(Ticket.id.in_(sub))
+
+    total = session.exec(select(func.count()).select_from(stmt.subquery())).one()
+    total_pages = max(1, math.ceil(total / PER_PAGE))
+    page = max(1, min(page, total_pages))
+
+    tickets = session.exec(
+        stmt.order_by(Ticket.freshdesk_updated_at.desc())
+            .offset((page - 1) * PER_PAGE)
+            .limit(PER_PAGE)
+    ).all()
+
+    # Load classifications only for this page
+    ticket_ids = [t.id for t in tickets]
+    classifications: dict[int, Classification] = {}
+    if ticket_ids:
+        for cl in session.exec(select(Classification).where(Classification.ticket_id.in_(ticket_ids))).all():
+            if cl.ticket_id not in classifications or cl.created_at > classifications[cl.ticket_id].created_at:
+                classifications[cl.ticket_id] = cl
 
     return templates.TemplateResponse(
         request,
@@ -78,7 +91,6 @@ async def inbox(
             "priority_labels": FRESHDESK_PRIORITY,
             "category_color": CATEGORY_COLOR,
             "all_categories": ALL_CATEGORIES,
-            # active filters (to keep form state)
             "status_labels": FRESHDESK_STATUS,
             "filter_q": q,
             "filter_priority": priority_int,
@@ -86,5 +98,9 @@ async def inbox(
             "filter_sender_type": sender_type,
             "freshdesk_base": f"https://{settings.freshdesk_domain}",
             "filter_status": status,
+            "page": page,
+            "total_pages": total_pages,
+            "total": total,
+            "per_page": PER_PAGE,
         },
     )

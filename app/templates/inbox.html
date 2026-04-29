@@ -4,8 +4,8 @@
 
 {% block content %}
 <div class="flex items-center justify-between mb-4">
-  <h1 class="text-xl font-semibold">{{ status_labels.get(filter_status, "Tickets") }}
-    <span class="ml-2 text-sm font-normal text-gray-500">({{ tickets|length }})</span>
+  <h1 class="text-xl font-semibold">{{ status_labels.get(filter_status|int if filter_status else 0, "All Tickets") }}
+    <span class="ml-2 text-sm font-normal text-gray-500">{{ total }} ticket{{ "s" if total != 1 }}</span>
   </h1>
   <button
     hx-get="/"
@@ -18,10 +18,15 @@
 
 <!-- Status tabs -->
 <div class="flex gap-1 mb-4">
+  <a href="?status=&q={{ filter_q }}&priority={{ filter_priority or '' }}&category={{ filter_category }}"
+    class="px-4 py-1.5 rounded text-sm font-medium
+      {% if not filter_status %}bg-gray-900 text-white{% else %}bg-white text-gray-600 border border-gray-200 hover:bg-gray-50{% endif %}">
+    All
+  </a>
   {% for val, label in status_labels.items() %}
   <a href="?status={{ val }}&q={{ filter_q }}&priority={{ filter_priority or '' }}&category={{ filter_category }}"
     class="px-4 py-1.5 rounded text-sm font-medium
-      {% if filter_status == val %}bg-gray-900 text-white{% else %}bg-white text-gray-600 border border-gray-200 hover:bg-gray-50{% endif %}">
+      {% if filter_status == val|string %}bg-gray-900 text-white{% else %}bg-white text-gray-600 border border-gray-200 hover:bg-gray-50{% endif %}">
     {{ label }}
   </a>
   {% endfor %}
@@ -197,7 +202,18 @@
 </div>
 {% endif %}
 
-<p class="mt-3 text-xs text-gray-400">
-  Last synced: {{ tickets[0].synced_at.strftime("%H:%M:%S") if tickets else "—" }}
-</p>
+{% if total_pages > 1 %}
+{% set qs = "q=" ~ filter_q ~ "&priority=" ~ (filter_priority or '') ~ "&category=" ~ filter_category ~ "&sender_type=" ~ filter_sender_type ~ "&status=" ~ filter_status %}
+<div class="mt-4 flex items-center justify-between text-sm text-gray-500">
+  <span>Page {{ page }} of {{ total_pages }} &mdash; showing {{ ((page - 1) * per_page + 1) }}–{{ [page * per_page, total] | min }} of {{ total }}</span>
+  <div class="flex gap-2">
+    {% if page > 1 %}
+    <a href="?{{ qs }}&page={{ page - 1 }}" class="px-3 py-1.5 border border-gray-200 rounded hover:bg-gray-50">← Prev</a>
+    {% endif %}
+    {% if page < total_pages %}
+    <a href="?{{ qs }}&page={{ page + 1 }}" class="px-3 py-1.5 border border-gray-200 rounded hover:bg-gray-50">Next →</a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
 {% endblock %}

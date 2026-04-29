@@ -25,9 +25,16 @@ A back-office web app that pulls Freshdesk tickets, classifies them, drafts AI r
 ```bash
 uv sync
 uv run alembic upgrade head
-uv run ticket-helper web --reload        # start the web server
-uv run ticket-helper sync                # one-shot Freshdesk sync (--days N, default 1)
-uv run ticket-helper classify            # classify unclassified tickets (--force to redo all)
+uv run ticket-helper web --reload              # start the web server
+
+# First-time data load
+uv run ticket-helper download --skip-conversations   # fetch full ticket history to data/tickets.jsonl
+uv run ticket-helper sync                            # load JSONL into DB + pull latest from Freshdesk API
+uv run ticket-helper classify                        # classify all tickets (--force to redo all)
+
+# Ongoing
+uv run ticket-helper sync                      # incremental sync (--days N, default 1)
+uv run ticket-helper classify                  # classify any newly unclassified tickets
 ```
 
 Set env vars (or `.env`):
@@ -46,35 +53,39 @@ BASIC_AUTH_PASSWORD=...
 ```
 app/
   main.py          # FastAPI app + lifespan (starts poller)
-  cli.py           # Typer CLI — web / sync / classify commands
+  cli.py           # Typer CLI — web / download / sync / classify commands
   config.py        # pydantic-settings, loads env / Secrets Manager
   db.py            # SQLModel engine + session
   models.py        # Ticket, Conversation, Classification, Draft, DraftEdit, SentReply, AgentEvent
   routes/
-    inbox.py       # GET /
+    inbox.py       # GET / — paginated (50/page), filtered by status/category/sender/priority/q
     ticket.py      # GET + POST /tickets/{id}
-    dashboard.py   # GET /dashboard
+    dashboard.py   # GET /dashboard — charts filtered by status/category/sender/q
     htmx.py        # HTMX partials (regenerate, context panel, send confirmations)
   services/
     freshdesk.py   # Freshdesk v2 REST client (httpx)
     balance.py     # Balance API client + outbox
     commerce.py    # Order / shipping lookups (mocked initially)
-    poller.py      # asyncio background task (syncs tickets every 90s)
-    classify_task.py  # batch classifier + shared helpers (ensure_conversations, run_rule_classify, run_classify)
+    poller.py      # asyncio background task (syncs tickets every 90s); load_tickets_from_jsonl()
+    classify_task.py  # bulk classifier (bulk-loaded, in-memory lookups, batch inserts); load_conversations_from_jsonl()
+    downloader.py  # download_tickets() / download_conversations() → data/*.jsonl
   agents/
-    classifier.py  # ClassifierAgent — structured output, no tools
+    classifier.py  # ClassifierAgent — full conversation thread, structured output, no tools
     drafter.py     # DrafterAgent — tool-using
     tools.py       # Pydantic AI tool definitions wrapping services
     prompts/       # Per-category system prompts (*.md), one file per category
   templates/
     base.html
-    inbox.html
+    inbox.html     # paginated ticket list
     ticket.html
-    dashboard.html
+    dashboard.html # volume/dow/hour charts + category donut, all filterable
     partials/      # _draft.html, _context.html, _balance_card.html, _ticket_row.html
   static/
     htmx.min.js
     style.css
+scripts/
+  download_history.py    # thin wrapper around app/services/downloader.py
+  load_reference_data.py # load merchants/buyers from data/*.csv into DB
 ```
 
 ## Architecture Decisions
@@ -83,6 +94,8 @@ app/
 - **Server-rendered (Jinja2 + HTMX)** — no SPA, no build step, partial swaps via HTMX.
 - **Drafts only** — agents always review and send. Auto-send is post-v1.
 - **Single container** — web UI and background poller run in the same process via lifespan task.
+- **Bulk classification** — `classify_all_unclassified()` loads all tickets, conversations, merchants, and buyers in ~5 queries then processes entirely in memory; batch-inserts results. Rules path: ~10s for 30k tickets.
+- **Paginated inbox** — 50 tickets per page; category/sender/status filters pushed to DB subqueries so only the current page is loaded.
 
 ## External Integrations
 
@@ -134,7 +147,7 @@ When a ticket is matched to a known buyer (via email or phone), buyer status ove
 - Basic auth (not OAuth) for v1
 - SQLite (not RDS) for v1
 - No webhooks
-- Dashboard uses plain HTML tables + inline SVG sparklines, no charting lib
+- Dashboard uses Chart.js (CDN) for bar/donut charts — no build step
 
 ## Deferred (Post-v1)
 

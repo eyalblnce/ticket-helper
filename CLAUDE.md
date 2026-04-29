@@ -25,7 +25,9 @@ A back-office web app that pulls Freshdesk tickets, classifies them, drafts AI r
 ```bash
 uv sync
 uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
+uv run ticket-helper web --reload        # start the web server
+uv run ticket-helper sync                # one-shot Freshdesk sync (--days N, default 1)
+uv run ticket-helper classify            # classify unclassified tickets (--force to redo all)
 ```
 
 Set env vars (or `.env`):
@@ -44,6 +46,7 @@ BASIC_AUTH_PASSWORD=...
 ```
 app/
   main.py          # FastAPI app + lifespan (starts poller)
+  cli.py           # Typer CLI — web / sync / classify commands
   config.py        # pydantic-settings, loads env / Secrets Manager
   db.py            # SQLModel engine + session
   models.py        # Ticket, Conversation, Classification, Draft, DraftEdit, SentReply, AgentEvent
@@ -56,7 +59,8 @@ app/
     freshdesk.py   # Freshdesk v2 REST client (httpx)
     balance.py     # Balance API client + outbox
     commerce.py    # Order / shipping lookups (mocked initially)
-    poller.py      # asyncio background task
+    poller.py      # asyncio background task (syncs tickets every 90s)
+    classify_task.py  # batch classifier + shared helpers (ensure_conversations, run_rule_classify, run_classify)
   agents/
     classifier.py  # ClassifierAgent — structured output, no tools
     drafter.py     # DrafterAgent — tool-using
@@ -97,7 +101,11 @@ All write operations require explicit agent confirmation in the UI.
 ## AI Agents
 
 ### ClassifierAgent
-One LLM call, no tools. Structured output: `category`, `urgency` (1–5), `sentiment`, `entities` (order_id, invoice_id, etc.), `suggested_destination` (freshdesk_reply | balance_outbox).
+One LLM call, no tools. Structured output: `category`, `urgency` (1–5), `sentiment`, `sender_type`, `entities` (order_id, invoice_id, etc.), `suggested_destination` (freshdesk_reply | balance_outbox).
+
+Classifies the **full conversation thread** (not just the first message). Each message is labeled by direction (Customer / Support / Internal Note). Per-message cap: 1500 chars; total cap: 8000 chars.
+
+A rules-based fallback (`app/services/rules.py`) runs without an API key and uses the same input shape.
 
 Priority categories for v1: `shipping_status`, `invoice_question`, `payment_status`. Others get a "no template yet" placeholder.
 
@@ -105,6 +113,19 @@ Priority categories for v1: `shipping_status`, `invoice_question`, `payment_stat
 Tool-using agent. Tools: `get_order`, `get_tracking`, `get_customer_history`, `search_kb`, and all Balance read tools. Returns: `body_text`, `confidence`, `needs_review_reason`, `destination`, `citations`.
 
 Per-category system prompts live in `app/agents/prompts/*.md`. One file per category.
+
+## Team Routing
+
+Tickets are routed to one of four internal teams based on category and buyer status:
+
+| Team | Categories | Buyer signal (stronger than keywords) |
+|---|---|---|
+| **Collections** | `payment_status`, `invoice_question` | — |
+| **Risk** | `credit_limit_question` | `buyer.is_suspended = True`; overdue `terms_status` (values TBD) |
+| **Payment Ops** | `payment_failed` | — |
+| **Other** | everything else | — |
+
+When a ticket is matched to a known buyer (via email or phone), buyer status overrides keyword-based routing: `is_suspended=True` → Risk regardless of category. Full `terms_status`-based routing is pending confirmation of the exact status strings in the Balance data.
 
 ## Scope Cuts (v1)
 
@@ -132,3 +153,4 @@ Per-category system prompts live in `app/agents/prompts/*.md`. One file per cate
 3. **Agent identity** — shared basic-auth password or per-agent credentials in a config file?
 4. **Balance outbox policy** — is the suggested destination always overridable, or do some categories force Balance outbox?
 5. **Balance API access** — sandbox credentials and v2 API docs needed before DrafterAgent work begins.
+6. **Buyer `terms_status` values** — what are the possible strings in the Balance data? Needed to complete rules-based team routing (e.g. "overdue" → Collections, "suspended" → Risk).

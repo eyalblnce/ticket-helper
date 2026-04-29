@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from sqlmodel import Session, select
 
@@ -58,7 +60,42 @@ def _upsert_ticket(session: Session, payload: dict) -> None:
         session.add(Ticket(**values))
 
 
+TICKETS_JSONL = Path("data/tickets.jsonl")
+LOAD_LOG_EVERY = 5000  # lines
 INITIAL_SYNC_DAYS = 30  # on first run, fetch tickets updated in last N days
+
+
+def load_tickets_from_jsonl(path: Path = TICKETS_JSONL) -> dict:
+    """Load tickets.jsonl into the Ticket table. Returns loaded/skipped counts."""
+    if not path.exists():
+        log.warning("tickets file not found: %s", path)
+        return {"loaded": 0, "updated": 0}
+
+    total_lines = sum(1 for _ in path.open())
+    log.info("load_tickets: %d lines in %s", total_lines, path)
+    loaded = updated = 0
+
+    with path.open() as f:
+        with Session(engine) as session:
+            for i, line in enumerate(f, 1):
+                payload = json.loads(line)
+                existing = session.exec(
+                    select(Ticket).where(Ticket.freshdesk_id == payload["id"])
+                ).first()
+                _upsert_ticket(session, payload)
+                if existing:
+                    updated += 1
+                else:
+                    loaded += 1
+
+                if i % 1000 == 0:
+                    session.commit()
+                    log.info("load_tickets: [%d/%d] loaded=%d updated=%d", i, total_lines, loaded, updated)
+
+            session.commit()
+
+    log.info("load_tickets: done — loaded=%d updated=%d", loaded, updated)
+    return {"loaded": loaded, "updated": updated}
 
 
 async def sync_once(updated_since: datetime | None = None) -> int:

@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime
+from pathlib import Path
 
 from sqlmodel import Session, select
 
 from app.agents.classifier import BuyerContext, MerchantContext, classify
 from app.config import settings
 from app.db import engine
-from app.models import Classification, Conversation, Ticket
+from app.models import Buyer, Classification, Conversation, Merchant, Ticket
 from app.services.freshdesk import FreshdeskClient
 from app.services.reference_lookup import (
     find_buyer_by_public_id,
@@ -67,6 +69,7 @@ async def ensure_conversations(ticket: Ticket, session: Session) -> list[Convers
     ).all()
 
     if not conversations:
+        log.debug("ticket %d: fetching conversations from Freshdesk", ticket.freshdesk_id)
         client = FreshdeskClient(settings.freshdesk_domain, settings.freshdesk_api_key)
         try:
             raw = await client.get_conversations(ticket.freshdesk_id)
@@ -85,8 +88,11 @@ async def ensure_conversations(ticket: Ticket, session: Session) -> list[Convers
                 .where(Conversation.ticket_id == ticket.id)
                 .order_by(Conversation.freshdesk_created_at)
             ).all()
+            log.debug("ticket %d: stored %d conversation(s)", ticket.freshdesk_id, len(conversations))
         finally:
             await client.close()
+    else:
+        log.debug("ticket %d: %d conversation(s) from cache", ticket.freshdesk_id, len(conversations))
 
     return list(conversations)
 
@@ -116,6 +122,7 @@ def run_rule_classify(
     if db_merchant:
         entities["merchant_id"] = db_merchant.public_id
         entities["merchant_name"] = db_merchant.merchant_name
+        log.debug("ticket %d: matched merchant %s (%s)", ticket.freshdesk_id, db_merchant.merchant_name, db_merchant.public_id)
     else:
         db_buyers = find_buyers_by_email(ticket.requester_email, session)
         if not db_buyers:
@@ -125,12 +132,19 @@ def run_rule_classify(
             b = db_buyers[0]
             entities["buyer_id"] = b.public_id
             entities["merchant_name"] = b.merchant_name
+            log.debug("ticket %d: matched buyer %s (%s)", ticket.freshdesk_id, b.buyer_name, b.public_id)
+        else:
+            log.debug("ticket %d: no merchant/buyer match", ticket.freshdesk_id)
     result["entities"] = entities
 
     cl = Classification(ticket_id=ticket.id, **result)
     session.add(cl)
     session.commit()
     session.refresh(cl)
+    log.info(
+        "ticket %d: rules → category=%s urgency=%d sentiment=%s sender=%s",
+        ticket.freshdesk_id, cl.category, cl.urgency, cl.sentiment, cl.sender_type,
+    )
     return cl
 
 
@@ -187,6 +201,12 @@ async def run_classify(
                 status=db_merchant.status,
             )
 
+    log.debug(
+        "ticket %d: calling LLM (%d message(s), merchant=%s, buyers=%d)",
+        ticket.freshdesk_id, len(conv_dicts),
+        merchant_ctx.get("name") if merchant_ctx else None,
+        len(buyer_ctxs),
+    )
     result = await classify(
         ticket.subject,
         conv_dicts,
@@ -207,54 +227,286 @@ async def run_classify(
     session.add(cl)
     session.commit()
     session.refresh(cl)
+    log.info(
+        "ticket %d: llm → category=%s urgency=%d sentiment=%s sender=%s",
+        ticket.freshdesk_id, cl.category, cl.urgency, cl.sentiment, cl.sender_type,
+    )
     return cl
+
+
+# ---------------------------------------------------------------------------
+# Conversation loader (from downloaded JSONL)
+# ---------------------------------------------------------------------------
+
+CONVERSATIONS_JSONL = Path("data/conversations.jsonl")
+LOAD_BATCH_SIZE = 500
+LOAD_LOG_EVERY = 2000  # lines
+
+
+def load_conversations_from_jsonl(path: Path = CONVERSATIONS_JSONL) -> dict:
+    """Load conversations.jsonl into the Conversation table.
+
+    Skips conversations already present (by freshdesk_id).
+    Returns a dict with loaded/skipped/missing_ticket counts.
+    """
+    if not path.exists():
+        log.warning("conversations file not found: %s", path)
+        return {"loaded": 0, "skipped": 0, "missing_ticket": 0}
+
+    with Session(engine) as session:
+        ticket_map: dict[int, int] = {
+            t.freshdesk_id: t.id
+            for t in session.exec(select(Ticket)).all()
+        }
+        existing_ids: set[int] = set(
+            session.exec(select(Conversation.freshdesk_id)).all()
+        )
+
+    log.info("load_conversations: %d tickets in DB, %d conversations already loaded", len(ticket_map), len(existing_ids))
+
+    total_lines = sum(1 for _ in path.open())
+    loaded = skipped = missing_ticket = 0
+    batch: list[Conversation] = []
+
+    def _flush() -> None:
+        nonlocal loaded
+        if not batch:
+            return
+        with Session(engine) as session:
+            session.add_all(batch)
+            session.commit()
+        loaded += len(batch)
+        batch.clear()
+
+    with path.open() as f:
+        for i, line in enumerate(f, 1):
+            entry = json.loads(line)
+            ticket_db_id = ticket_map.get(entry["ticket_id"])
+
+            if ticket_db_id is None:
+                missing_ticket += len(entry["conversations"])
+                continue
+
+            for c in entry["conversations"]:
+                conv_fid = c["id"]
+                if conv_fid in existing_ids:
+                    skipped += 1
+                    continue
+                existing_ids.add(conv_fid)
+                batch.append(Conversation(
+                    freshdesk_id=conv_fid,
+                    ticket_id=ticket_db_id,
+                    direction=direction(c),
+                    body_text=strip_html(c.get("body_text") or c.get("body") or ""),
+                    author_email=c.get("from_email") or str(c.get("user_id") or ""),
+                    freshdesk_created_at=parse_dt(c.get("created_at")),
+                ))
+                if len(batch) >= LOAD_BATCH_SIZE:
+                    _flush()
+
+            if i % LOAD_LOG_EVERY == 0 or i == total_lines:
+                log.info(
+                    "load_conversations: [%d/%d lines] loaded=%d skipped=%d missing_ticket=%d",
+                    i, total_lines, loaded + len(batch), skipped, missing_ticket,
+                )
+
+    _flush()
+    log.info(
+        "load_conversations: done — loaded=%d skipped=%d missing_ticket=%d",
+        loaded, skipped, missing_ticket,
+    )
+    return {"loaded": loaded, "skipped": skipped, "missing_ticket": missing_ticket}
 
 
 # ---------------------------------------------------------------------------
 # Batch runner
 # ---------------------------------------------------------------------------
 
+INSERT_BATCH_SIZE = 500
+
+
 async def classify_all_unclassified(force: bool = False) -> int:
     """Classify tickets that have no Classification record.
+
+    Bulk-loads all tickets, conversations, merchants, and buyers into memory
+    before processing to avoid N+1 queries.
 
     Args:
         force: When True, re-classify tickets that already have a classification.
     """
     with Session(engine) as session:
-        classified_ticket_ids = set(session.exec(select(Classification.ticket_id)).all())
-        all_tickets = session.exec(select(Ticket)).all()
-        if force:
-            unclassified_fids = [t.freshdesk_id for t in all_tickets]
-        else:
-            unclassified_fids = [t.freshdesk_id for t in all_tickets if t.id not in classified_ticket_ids]
+        classified_ids: set[int] = (
+            set() if force
+            else set(session.exec(select(Classification.ticket_id)).all())
+        )
+        tickets = session.exec(select(Ticket)).all()
+        to_classify = [t for t in tickets if t.id not in classified_ids]
 
-    log.info("classify_all: %d tickets to classify", len(unclassified_fids))
-    count = 0
+        if not to_classify:
+            log.info("classify_all: nothing to classify")
+            return 0
 
-    for freshdesk_id in unclassified_fids:
+        ticket_ids = {t.id for t in to_classify}
+        all_convs = session.exec(
+            select(Conversation).where(Conversation.ticket_id.in_(ticket_ids))
+        ).all()
+        convs_by_ticket: dict[int, list[Conversation]] = {}
+        for c in all_convs:
+            convs_by_ticket.setdefault(c.ticket_id, []).append(c)
+
+        merchant_by_domain: dict[str, Merchant] = {
+            m.domain: m for m in session.exec(select(Merchant)).all() if m.domain
+        }
+        buyers_by_email: dict[str, list[Buyer]] = {}
+        buyers_by_phone: dict[str, list[Buyer]] = {}
+        for b in session.exec(select(Buyer)).all():
+            for addr in filter(None, [b.email, b.qualification_email]):
+                buyers_by_email.setdefault(addr.lower(), []).append(b)
+            if b.phone:
+                buyers_by_phone.setdefault(b.phone, []).append(b)
+
+    total = len(to_classify)
+    log.info(
+        "classify_all: %d ticket(s) to classify, %d with conversations (force=%s)",
+        total, sum(1 for t in to_classify if t.id in convs_by_ticket), force,
+    )
+
+    count = errors = skipped = 0
+    pending: list[Classification] = []
+
+    def _flush() -> None:
+        if not pending:
+            return
+        with Session(engine) as session:
+            session.add_all(pending)
+            session.commit()
+        pending.clear()
+
+    for i, ticket in enumerate(to_classify, 1):
+        convs = sorted(
+            convs_by_ticket.get(ticket.id, []),
+            key=lambda c: c.freshdesk_created_at or datetime.min,
+        )
+        if not convs:
+            skipped += 1
+            log.debug("classify_all: ticket %d has no conversations, skipping", ticket.freshdesk_id)
+            continue
+
         try:
-            with Session(engine) as session:
-                ticket = session.exec(
-                    select(Ticket).where(Ticket.freshdesk_id == freshdesk_id)
-                ).first()
-                if not ticket:
-                    continue
-                already = session.exec(
-                    select(Classification).where(Classification.ticket_id == ticket.id)
-                ).first()
-                if already and not force:
-                    continue
-                conversations = await ensure_conversations(ticket, session)
-                if settings.anthropic_api_key:
-                    await run_classify(ticket, conversations, session)
-                else:
-                    run_rule_classify(ticket, conversations, session)
+            if settings.anthropic_api_key:
+                cl = await _classify_llm(ticket, convs, merchant_by_domain, buyers_by_email, buyers_by_phone)
+                await asyncio.sleep(CLASSIFY_DELAY)
+            else:
+                cl = _classify_rules(ticket, convs, merchant_by_domain, buyers_by_email, buyers_by_phone)
+
+            pending.append(cl)
             count += 1
-            log.info("classify_all: classified ticket %d (%d done)", freshdesk_id, count)
+            log.info("classify_all: [%d/%d] ticket %d → %s", i, total, ticket.freshdesk_id, cl.category)
+
+            if len(pending) >= INSERT_BATCH_SIZE:
+                _flush()
+
         except Exception:
-            log.exception("classify_all: error on ticket %d", freshdesk_id)
+            errors += 1
+            log.exception("classify_all: ticket %d failed", ticket.freshdesk_id)
 
-        await asyncio.sleep(CLASSIFY_DELAY)
-
-    log.info("classify_all: done — %d classified", count)
+    _flush()
+    log.info("classify_all: done — %d classified, %d no conversations, %d error(s)", count, skipped, errors)
     return count
+
+
+def _classify_rules(
+    ticket: Ticket,
+    convs: list[Conversation],
+    merchant_by_domain: dict[str, Merchant],
+    buyers_by_email: dict[str, list[Buyer]],
+    buyers_by_phone: dict[str, list[Buyer]],
+) -> Classification:
+    body = "\n\n".join(c.body_text for c in convs if c.direction == "inbound")
+    payload = ticket.raw_payload or {}
+    result = classify_ticket(
+        subject=ticket.subject,
+        body=body,
+        requester_email=ticket.requester_email,
+        priority=ticket.priority,
+        tags=payload.get("tags") or [],
+        source=payload.get("source"),
+    )
+
+    entities: dict = result.get("entities") or {}
+    domain_match = re.search(r"@([\w.-]+)$", ticket.requester_email.lower())
+    domain = domain_match.group(1) if domain_match else ""
+    db_merchant = merchant_by_domain.get(domain)
+    if db_merchant:
+        entities["merchant_id"] = db_merchant.public_id
+        entities["merchant_name"] = db_merchant.merchant_name
+        log.debug("ticket %d: matched merchant %s", ticket.freshdesk_id, db_merchant.merchant_name)
+    else:
+        email = ticket.requester_email.lower()
+        db_buyers = buyers_by_email.get(email, [])
+        if not db_buyers:
+            phone = re.sub(r"\D", "", (payload.get("requester") or {}).get("phone") or "")
+            db_buyers = buyers_by_phone.get(phone, []) if phone else []
+        if db_buyers:
+            b = db_buyers[0]
+            entities["buyer_id"] = b.public_id
+            entities["merchant_name"] = b.merchant_name
+            log.debug("ticket %d: matched buyer %s", ticket.freshdesk_id, b.buyer_name)
+        else:
+            log.debug("ticket %d: no merchant/buyer match", ticket.freshdesk_id)
+    result["entities"] = entities
+
+    log.info(
+        "ticket %d: rules → category=%s urgency=%d sentiment=%s sender=%s",
+        ticket.freshdesk_id, result["category"], result["urgency"], result["sentiment"], result["sender_type"],
+    )
+    return Classification(ticket_id=ticket.id, **result)
+
+
+async def _classify_llm(
+    ticket: Ticket,
+    convs: list[Conversation],
+    merchant_by_domain: dict[str, Merchant],
+    buyers_by_email: dict[str, list[Buyer]],
+    buyers_by_phone: dict[str, list[Buyer]],
+) -> Classification:
+    conv_dicts = [{"direction": c.direction, "body_text": c.body_text} for c in convs]
+
+    domain_match = re.search(r"@([\w.-]+)$", ticket.requester_email.lower())
+    domain = domain_match.group(1) if domain_match else ""
+    db_merchant = merchant_by_domain.get(domain)
+    merchant_ctx: MerchantContext | None = (
+        MerchantContext(name=db_merchant.merchant_name, public_id=db_merchant.public_id,
+                        domain=db_merchant.domain, status=db_merchant.status)
+        if db_merchant else None
+    )
+
+    email = ticket.requester_email.lower()
+    db_buyers = buyers_by_email.get(email, [])
+    if not db_buyers:
+        payload = ticket.raw_payload or {}
+        phone = re.sub(r"\D", "", (payload.get("requester") or {}).get("phone") or "")
+        db_buyers = buyers_by_phone.get(phone, []) if phone else []
+    buyer_ctxs = [
+        BuyerContext(name=b.buyer_name, public_id=b.public_id,
+                     merchant_name=b.merchant_name, terms_status=b.terms_status)
+        for b in db_buyers
+    ]
+
+    log.debug(
+        "ticket %d: calling LLM (%d message(s), merchant=%s, buyers=%d)",
+        ticket.freshdesk_id, len(conv_dicts),
+        merchant_ctx.get("name") if merchant_ctx else None, len(buyer_ctxs),
+    )
+    result = await classify(ticket.subject, conv_dicts, merchant=merchant_ctx, buyers=buyer_ctxs or None)
+    log.info(
+        "ticket %d: llm → category=%s urgency=%d sentiment=%s sender=%s",
+        ticket.freshdesk_id, result.category, result.urgency, result.sentiment, result.sender_type,
+    )
+    return Classification(
+        ticket_id=ticket.id,
+        category=result.category, urgency=result.urgency, sentiment=result.sentiment,
+        suggested_destination=result.suggested_destination, sender_type=result.sender_type,
+        entities=result.entities.model_dump(exclude_none=True),
+        model="claude-sonnet-4-6",
+    )

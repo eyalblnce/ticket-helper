@@ -39,3 +39,27 @@ class Conversation(SQLModel, table=True):
     body_text: str = ""
     author_email: str = ""
     freshdesk_created_at: datetime | None = None
+
+
+class Merchant(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    merchant_id: int = Field(unique=True, index=True)
+    merchant_name: str = ""
+    domain: str = Field(default="", index=True)
+    public_id: str = ""             # ven_...
+    status: str = ""
+    number_of_buyers: int = 0
+
+
+class Buyer(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    buyer_id: int = Field(unique=True, index=True)
+    public_id: str = ""             # byr_...
+    buyer_name: str = ""
+    email: str = Field(default="", index=True)
+    qualification_email: str = Field(default="", index=True)
+    phone: str = Field(default="", index=True)  # digits-only normalized
+    merchant_id: int = Field(index=True)
+    merchant_name: str = ""
+    terms_status: str = ""
+    is_suspended: bool = False

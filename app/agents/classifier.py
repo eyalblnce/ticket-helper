@@ -1,7 +1,7 @@
 """ClassifierAgent: single LLM call, structured output, no tools."""
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, TypedDict
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
@@ -30,18 +30,42 @@ Urgency scale: 1=low, 2=low-medium, 3=medium, 4=high, 5=critical/urgent
 
 Sender type — who sent this ticket:
 - merchant: a business that uses Balance to offer payment terms to their buyers.
-  Signals: email domain matches a known B2B seller, asks about their own account settings,
+  Signals: identified as merchant in context block, or asks about account settings,
   buyer management, integration issues, or outbound invoicing.
 - buyer: a company that buys from a Balance merchant on net terms.
-  Signals: asks about their own invoice, payment due date, credit limit, or order they placed.
+  Signals: identified as buyer in context block, or asks about their own invoice,
+  payment due date, credit limit, or order they placed.
 - unknown: cannot determine from the available text.
 
 Suggested destination:
 - balance_outbox: use for payment_status, payment_failed, invoice_question, credit_limit_question
 - freshdesk_reply: use for everything else
 
+Entities to extract:
+- order_id: any order number mentioned
+- invoice_id: any invoice number mentioned
+- tracking_id: any shipment tracking number mentioned
+- balance_buyer_id: Balance buyer public ID (byr_...) — use value from context block if provided
+- merchant_id: Balance vendor public ID (ven_...) — use value from context block if provided
+- merchant_name: merchant's company name — use value from context block if provided
+- email: any email address mentioned in the body
+
 Return ONLY valid JSON matching the schema — no explanation.
 """.strip()
+
+
+class MerchantContext(TypedDict, total=False):
+    name: str
+    public_id: str
+    domain: str
+    status: str
+
+
+class BuyerContext(TypedDict, total=False):
+    name: str
+    public_id: str
+    merchant_name: str
+    terms_status: str
 
 
 class ExtractedEntities(BaseModel):
@@ -49,6 +73,9 @@ class ExtractedEntities(BaseModel):
     invoice_id: str | None = None
     tracking_id: str | None = None
     balance_buyer_id: str | None = None
+    merchant_id: str | None = None
+    merchant_name: str | None = None
+    buyer_id: str | None = None
     email: str | None = None
 
 
@@ -81,7 +108,38 @@ _agent = Agent(
 )
 
 
-async def classify(subject: str, body: str) -> TicketClassification:
-    prompt = f"Subject: {subject}\n\n{body[:3000]}"
-    result = await _agent.run(prompt)
+_CONV_LABEL = {"inbound": "Customer", "outbound": "Support", "private_note": "Internal Note"}
+_PER_MSG_LIMIT = 1500
+_TOTAL_LIMIT = 8000
+
+
+async def classify(
+    subject: str,
+    conversations: list[dict],
+    merchant: MerchantContext | None = None,
+    buyers: list[BuyerContext] | None = None,
+) -> TicketClassification:
+    thread_parts = []
+    for i, c in enumerate(conversations, 1):
+        label = _CONV_LABEL.get(c["direction"], c["direction"])
+        thread_parts.append(f"[Message {i} – {label}]:\n{c['body_text'][:_PER_MSG_LIMIT]}")
+    thread = "\n\n".join(thread_parts)[:_TOTAL_LIMIT]
+    parts = [f"Subject: {subject}\n\n{thread}"]
+
+    if merchant:
+        parts.append(
+            f"\n\n[Context: Sender is a known merchant — "
+            f"name={merchant.get('name')}, "
+            f"id={merchant.get('public_id')}, "
+            f"status={merchant.get('status')}]"
+        )
+    elif buyers:
+        buyer_lines = "; ".join(
+            f"name={b.get('name', 'unknown')}, id={b.get('public_id')}, "
+            f"merchant={b.get('merchant_name')}, terms={b.get('terms_status')}"
+            for b in buyers
+        )
+        parts.append(f"\n\n[Context: Sender is a known buyer — {buyer_lines}]")
+
+    result = await _agent.run("".join(parts))
     return result.output

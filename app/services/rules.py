@@ -21,8 +21,14 @@ FREE_EMAIL_DOMAINS = {
     "protonmail.com", "proton.me", "ymail.com", "zoho.com",
 }
 
-# Grow this list as you identify merchant domains from your customer data.
+# Populated at startup from the Merchant table via reload_merchant_domains().
 KNOWN_MERCHANT_DOMAINS: set[str] = set()
+
+
+def reload_merchant_domains(domains: set[str]) -> None:
+    """Replace the in-memory merchant domain set. Called once during app lifespan."""
+    KNOWN_MERCHANT_DOMAINS.clear()
+    KNOWN_MERCHANT_DOMAINS.update(domains)
 
 # ---------------------------------------------------------------------------
 # Keyword sets  (all lowercase)

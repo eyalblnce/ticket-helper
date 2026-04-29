@@ -4,12 +4,11 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
-from app.agents.classifier import classify
 from app.config import settings
-from app.services.rules import classify_ticket
 from app.db import get_session
 from app.models import Classification, Conversation, Ticket
-from app.services.freshdesk import FreshdeskClient
+from app.services.classify_task import ensure_conversations, run_classify, run_rule_classify
+from app.services.reference_lookup import find_buyer_by_public_id, find_merchant_by_public_id
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -47,14 +46,21 @@ async def ticket_detail(
     ).first()
 
     if not classification:
-        classification = _run_rule_classify(ticket, conversations, session)
-    if settings.anthropic_api_key and classification.model == "rules-v1":
-        classification = await _run_classify(ticket, conversations, session)
+        classification = run_rule_classify(ticket, conversations, session)
+
+    cf = (ticket.raw_payload or {}).get("custom_fields") or {}
+    bv_id = cf.get("cf_buyervendor_id") or ""
+    db_buyer = find_buyer_by_public_id(bv_id, session) if bv_id.startswith("byr_") else None
+    db_merchant = find_merchant_by_public_id(bv_id, session) if bv_id.startswith("ven_") else None
+    if db_buyer and not db_merchant:
+        db_merchant = find_merchant_by_public_id(
+            (classification.entities or {}).get("merchant_id", ""), session
+        )
 
     return templates.TemplateResponse(
         request,
         "ticket.html",
-        _ctx(ticket, conversations, classification),
+        _ctx(ticket, conversations, classification, db_buyer, db_merchant),
     )
 
 
@@ -64,14 +70,17 @@ async def reclassify(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """HTMX endpoint — re-runs classifier and returns the classification partial."""
+    """HTMX endpoint — re-runs rules+DB classifier and returns the classification partial."""
     ticket, conversations = await _ensure_ticket(freshdesk_id, session)
-    classification = await _run_classify(ticket, conversations, session)
+    if settings.anthropic_api_key:
+        classification = await run_classify(ticket, conversations, session)
+    else:
+        classification = run_rule_classify(ticket, conversations, session)
 
     return templates.TemplateResponse(
         request,
         "partials/_classification.html",
-        {"classification": classification, "category_color": CATEGORY_COLOR},
+        {"classification": classification, "category_color": CATEGORY_COLOR, "ticket": ticket},
     )
 
 
@@ -88,86 +97,23 @@ async def _ensure_ticket(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    conversations = session.exec(
-        select(Conversation)
-        .where(Conversation.ticket_id == ticket.id)
-        .order_by(Conversation.freshdesk_created_at)
-    ).all()
+    conversations = await ensure_conversations(ticket, session)
+    return ticket, conversations
 
-    if not conversations:
-        client = FreshdeskClient(settings.freshdesk_domain, settings.freshdesk_api_key)
-        try:
-            raw = await client.get_conversations(freshdesk_id)
-            for c in raw:
-                session.add(Conversation(
-                    freshdesk_id=c["id"],
-                    ticket_id=ticket.id,
-                    direction=_direction(c),
-                    body_text=_strip_html(c.get("body_text") or c.get("body") or ""),
-                    author_email=c.get("from_email") or c.get("user_id") or "",
-                    freshdesk_created_at=_parse_dt(c.get("created_at")),
-                ))
-            session.commit()
-            conversations = session.exec(
-                select(Conversation)
-                .where(Conversation.ticket_id == ticket.id)
-                .order_by(Conversation.freshdesk_created_at)
-            ).all()
-        finally:
-            await client.close()
-
-    return ticket, list(conversations)
-
-
-def _run_rule_classify(
-    ticket: Ticket, conversations: list[Conversation], session: Session
-) -> Classification:
-    body = next((c.body_text for c in conversations if c.direction == "inbound"), "")
-    payload = ticket.raw_payload or {}
-    result = classify_ticket(
-        subject=ticket.subject,
-        body=body,
-        requester_email=ticket.requester_email,
-        priority=ticket.priority,
-        tags=payload.get("tags") or [],
-        source=payload.get("source"),
-    )
-    cl = Classification(ticket_id=ticket.id, **result)
-    session.add(cl)
-    session.commit()
-    session.refresh(cl)
-    return cl
-
-
-async def _run_classify(
-    ticket: Ticket, conversations: list[Conversation], session: Session
-) -> Classification:
-    first_inbound = next(
-        (c.body_text for c in conversations if c.direction == "inbound"), ""
-    )
-    result = await classify(ticket.subject, first_inbound)
-
-    cl = Classification(
-        ticket_id=ticket.id,
-        category=result.category,
-        urgency=result.urgency,
-        sentiment=result.sentiment,
-        suggested_destination=result.suggested_destination,
-        sender_type=result.sender_type,
-        entities=result.entities.model_dump(exclude_none=True),
-        model="claude-sonnet-4-6",
-    )
-    session.add(cl)
-    session.commit()
-    session.refresh(cl)
-    return cl
 
 
 def _ctx(
     ticket: Ticket,
     conversations: list[Conversation],
     classification: Classification | None,
+    db_buyer=None,
+    db_merchant=None,
 ) -> dict:
+    cf = (ticket.raw_payload or {}).get("custom_fields") or {}
+    # Requester email: stored field first, then first inbound conversation author
+    email = ticket.requester_email or next(
+        (c.author_email for c in conversations if c.direction == "inbound"), ""
+    )
     return {
         "ticket": ticket,
         "conversations": conversations,
@@ -176,29 +122,12 @@ def _ctx(
         "priority_label": FRESHDESK_PRIORITY.get(ticket.priority, "?"),
         "priority_color": PRIORITY_COLOR.get(ticket.priority, "gray"),
         "category_color": CATEGORY_COLOR,
+        "requester_email": email,
+        "cf_entity_type": cf.get("cf_entity_type") or "",
+        "cf_company_name": cf.get("cf_company_name") or "",
+        "cf_buyervendor_id": cf.get("cf_buyervendor_id") or "",
+        "db_buyer": db_buyer,
+        "db_merchant": db_merchant,
     }
 
 
-def _direction(c: dict) -> str:
-    if c.get("private"):
-        return "private_note"
-    if c.get("incoming"):
-        return "inbound"
-    return "outbound"
-
-
-def _strip_html(html: str) -> str:
-    import re
-    return re.sub(r"<[^>]+>", " ", html).strip()
-
-
-def _parse_dt(val: str | None):
-    from datetime import datetime
-    if not val:
-        return None
-    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z"):
-        try:
-            return datetime.strptime(val, fmt).replace(tzinfo=None)
-        except ValueError:
-            continue
-    return None

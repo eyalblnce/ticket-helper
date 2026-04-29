@@ -6,7 +6,7 @@
       <span class="ml-1 text-xs font-normal text-gray-400">{{ classification.model }}</span>
     </h3>
     <button
-      hx-post="/tickets/{{ classification.ticket_id }}/classify"
+      hx-post="/tickets/{{ ticket.freshdesk_id }}/classify"
       hx-target="#classification-panel"
       hx-swap="outerHTML"
       hx-indicator="#cl-spinner"

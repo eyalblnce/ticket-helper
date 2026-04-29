@@ -24,7 +24,6 @@ A back-office web app that pulls Freshdesk tickets, classifies them, drafts AI r
 
 ```bash
 uv sync
-uv run alembic upgrade head
 uv run ticket-helper web --reload              # start the web server
 
 # First-time data load
@@ -36,6 +35,8 @@ uv run ticket-helper classify                        # classify all tickets (--f
 uv run ticket-helper sync                      # incremental sync (--days N, default 1)
 uv run ticket-helper classify                  # classify any newly unclassified tickets
 ```
+
+DB migrations are handled by `app/db._migrate()` — a plain `ALTER TABLE … ADD COLUMN IF NOT EXISTS` list, no Alembic. `create_tables()` runs it on every startup.
 
 Set env vars (or `.env`):
 ```
@@ -57,6 +58,7 @@ app/
   config.py        # pydantic-settings, loads env / Secrets Manager
   db.py            # SQLModel engine + session
   models.py        # Ticket, Conversation, Classification, Draft, DraftEdit, SentReply, AgentEvent
+                   # Classification.team: collections | risk | payment_ops | other (computed at classify time)
   routes/
     inbox.py       # GET / — paginated (50/page), filtered by status/category/sender/priority/q
     ticket.py      # GET + POST /tickets/{id}
@@ -95,12 +97,16 @@ scripts/
 - **Drafts only** — agents always review and send. Auto-send is post-v1.
 - **Single container** — web UI and background poller run in the same process via lifespan task.
 - **Bulk classification** — `classify_all_unclassified()` loads all tickets, conversations, merchants, and buyers in ~5 queries then processes entirely in memory; batch-inserts results. Rules path: ~10s for 30k tickets.
-- **Paginated inbox** — 50 tickets per page; category/sender/status filters pushed to DB subqueries so only the current page is loaded.
+- **Paginated inbox** — 50 tickets per page; category/sender/status/team filters pushed to DB subqueries so only the current page is loaded.
+- **Ticket body synthesis** — Freshdesk's conversations API omits the original message (it lives in `ticket.description_text`). `ensure_conversations()` synthesises a `direction="ticket_body"` Conversation (stored with `freshdesk_id = -ticket_id`) so the first message appears in the thread and is included in classification. `list_tickets` is called with `include=description` so `description_text` is present in `raw_payload` at sync time — no extra API calls needed later.
+- **Inline attachment images** — Freshdesk embeds images as signed JWT URLs (`attachment.freshdesk.com/inline/attachment?token=…`). They are publicly accessible (no auth needed) but tokens are short-lived, so we don't store or render them. Plain `description_text` is used instead.
 
 ## External Integrations
 
 ### Freshdesk (v2 REST API)
 Methods: `list_tickets`, `get_ticket`, `get_conversations`, `add_private_note`, `reply`, `update_ticket`.
+
+`list_tickets` is called with `include=description` (default) so every ticket payload includes `description_text` and `description` (HTML). The original customer message is not returned by `get_conversations` — it must be read from `raw_payload["description_text"]`.
 
 ### Balance ([getbalance.com](https://www.getbalance.com))
 Read: `get_buyer`, `list_buyer_transactions`, `get_transaction`, `get_invoice`, `list_invoices`, `get_payment`.
@@ -116,7 +122,9 @@ All write operations require explicit agent confirmation in the UI.
 ### ClassifierAgent
 One LLM call, no tools. Structured output: `category`, `urgency` (1–5), `sentiment`, `sender_type`, `entities` (order_id, invoice_id, etc.), `suggested_destination` (freshdesk_reply | balance_outbox).
 
-Classifies the **full conversation thread** (not just the first message). Each message is labeled by direction (Customer / Support / Internal Note). Per-message cap: 1500 chars; total cap: 8000 chars.
+Classifies the **full conversation thread** including the synthesised `ticket_body` entry (the original customer message). Each message is labeled by direction (Customer / Support / Internal Note). Per-message cap: 1500 chars; total cap: 8000 chars.
+
+After classification, `assign_team()` (`app/services/rules.py`) derives the `team` field from category + buyer `is_suspended`. The buyer is resolved via email, phone, or `cf_buyervendor_id` — whichever matches first.
 
 A rules-based fallback (`app/services/rules.py`) runs without an API key and uses the same input shape.
 
@@ -129,16 +137,18 @@ Per-category system prompts live in `app/agents/prompts/*.md`. One file per cate
 
 ## Team Routing
 
-Tickets are routed to one of four internal teams based on category and buyer status:
+`assign_team(category, is_suspended)` in `app/services/rules.py` — called after every classification and stored as `Classification.team`.
 
-| Team | Categories | Buyer signal (stronger than keywords) |
-|---|---|---|
-| **Collections** | `payment_status`, `invoice_question` | — |
-| **Risk** | `credit_limit_question` | `buyer.is_suspended = True`; overdue `terms_status` (values TBD) |
-| **Payment Ops** | `payment_failed` | — |
-| **Other** | everything else | — |
+| Condition | Team |
+|---|---|
+| `is_suspended=True` + `credit_limit_question` | **Risk** |
+| `is_suspended=True` + anything else | **Collections** |
+| `payment_status` or `invoice_question` | **Collections** |
+| `credit_limit_question` | **Risk** |
+| `payment_failed` | **Payment Ops** |
+| everything else | **Other** |
 
-When a ticket is matched to a known buyer (via email or phone), buyer status overrides keyword-based routing: `is_suspended=True` → Risk regardless of category. Full `terms_status`-based routing is pending confirmation of the exact status strings in the Balance data.
+Buyer is matched via email → phone → `cf_buyervendor_id` (in that order). Suspension overrides category-based routing. `terms_status`-based routing is deferred pending confirmation of the exact status strings in the Balance data.
 
 ## Scope Cuts (v1)
 
@@ -166,4 +176,4 @@ When a ticket is matched to a known buyer (via email or phone), buyer status ove
 3. **Agent identity** — shared basic-auth password or per-agent credentials in a config file?
 4. **Balance outbox policy** — is the suggested destination always overridable, or do some categories force Balance outbox?
 5. **Balance API access** — sandbox credentials and v2 API docs needed before DrafterAgent work begins.
-6. **Buyer `terms_status` values** — what are the possible strings in the Balance data? Needed to complete rules-based team routing (e.g. "overdue" → Collections, "suspended" → Risk).
+6. **Buyer `terms_status` values** — what are the possible strings in the Balance data? Needed to extend team routing beyond `is_suspended` (e.g. "overdue" → Collections).

@@ -159,6 +159,9 @@
              target="_blank"
              onclick="event.stopPropagation()"
              class="text-blue-500 hover:underline">{{ t.freshdesk_id }}</a>
+          <a href="/desk?ticket_id={{ t.freshdesk_id }}&status={{ filter_status or '2' }}"
+             onclick="event.stopPropagation()"
+             class="text-xs text-gray-400 hover:text-blue-600 block mt-0.5">Desk</a>
         </td>
         <td class="px-4 py-3">
           <span class="font-medium text-gray-900">{{ t.subject or "(no subject)" }}</span>

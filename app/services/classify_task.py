@@ -23,6 +23,10 @@ from app.services.reference_lookup import (
     find_merchant_by_public_id,
 )
 from app.services.rules import assign_team, classify_ticket
+from app.services.ticket_thread import (
+    synthetic_description_provenance,
+    ticket_description_body_parts,
+)
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +46,16 @@ def direction(c: dict) -> str:
 
 
 def strip_html(html: str) -> str:
-    return re.sub(r"<[^>]+>", " ", html).strip()
+    """Strip tags for storage; preserve a little structure from common block tags."""
+    if not html:
+        return ""
+    t = html
+    t = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", t)
+    t = re.sub(r"(?i)</\s*(p|div|li|tr|h[1-6]|blockquote)\s*>", "\n", t)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n\s*\n\s*\n+", "\n\n", t)
+    return t.strip()
 
 
 def parse_dt(val: str | None) -> datetime | None:
@@ -60,15 +73,22 @@ def parse_dt(val: str | None) -> datetime | None:
 # Conversation fetching
 # ---------------------------------------------------------------------------
 
-async def ensure_conversations(ticket: Ticket, session: Session) -> list[Conversation]:
-    """Return cached conversations or fetch from Freshdesk and store them."""
-    conversations = session.exec(
-        select(Conversation)
-        .where(Conversation.ticket_id == ticket.id)
-        .order_by(Conversation.freshdesk_created_at)
-    ).all()
+def _real_freshdesk_conversations(conversations: list[Conversation]) -> list[Conversation]:
+    """Rows from Freshdesk /conversations (positive freshdesk_id)."""
+    return [c for c in conversations if c.freshdesk_id > 0]
 
-    if not conversations:
+
+async def ensure_conversations(ticket: Ticket, session: Session) -> list[Conversation]:
+    """Return cached conversations or fetch from Freshdesk, plus synthesised ticket description."""
+    conversations = list(
+        session.exec(
+            select(Conversation)
+            .where(Conversation.ticket_id == ticket.id)
+            .order_by(Conversation.freshdesk_created_at)
+        ).all()
+    )
+
+    if not _real_freshdesk_conversations(conversations):
         log.debug("ticket %d: fetching conversations from Freshdesk", ticket.freshdesk_id)
         client = FreshdeskClient(settings.freshdesk_domain, settings.freshdesk_api_key)
         try:
@@ -83,38 +103,73 @@ async def ensure_conversations(ticket: Ticket, session: Session) -> list[Convers
                     freshdesk_created_at=parse_dt(c.get("created_at")),
                 ))
             session.commit()
-            conversations = session.exec(
-                select(Conversation)
-                .where(Conversation.ticket_id == ticket.id)
-                .order_by(Conversation.freshdesk_created_at)
-            ).all()
+            conversations = list(
+                session.exec(
+                    select(Conversation)
+                    .where(Conversation.ticket_id == ticket.id)
+                    .order_by(Conversation.freshdesk_created_at)
+                ).all()
+            )
             log.debug("ticket %d: stored %d conversation(s)", ticket.freshdesk_id, len(conversations))
         finally:
             await client.close()
     else:
         log.debug("ticket %d: %d conversation(s) from cache", ticket.freshdesk_id, len(conversations))
 
-    conversations = list(conversations)
+    desc = strip_html((ticket.raw_payload or {}).get("description_text") or "")
+    synth_fid = -int(ticket.freshdesk_id)
+    synth_existing = next((c for c in conversations if c.freshdesk_id == synth_fid), None)
+    real = _real_freshdesk_conversations(conversations)
 
-    # Freshdesk conversations API omits the original ticket description (only replies/notes).
-    # Synthesise a ticket_body entry from the description stored during sync.
-    if not any(c.direction == "ticket_body" for c in conversations):
-        desc = strip_html((ticket.raw_payload or {}).get("description_text") or "")
-        if desc:
+    if desc:
+        want_dir, want_author = synthetic_description_provenance(ticket, real, desc)
+        ts = ticket.freshdesk_created_at
+        if synth_existing:
+            changed = (
+                synth_existing.direction != want_dir
+                or synth_existing.body_text != desc
+                or (synth_existing.author_email or "") != (want_author or "")
+            )
+            if changed:
+                synth_existing.direction = want_dir
+                synth_existing.body_text = desc
+                synth_existing.author_email = want_author or ""
+                synth_existing.freshdesk_created_at = ts
+                session.add(synth_existing)
+                session.commit()
+                log.debug(
+                    "ticket %d: updated synthetic description (%s)",
+                    ticket.freshdesk_id,
+                    want_dir,
+                )
+        else:
             body_conv = Conversation(
-                freshdesk_id=-ticket.freshdesk_id,
+                freshdesk_id=synth_fid,
                 ticket_id=ticket.id,
-                direction="ticket_body",
+                direction=want_dir,
                 body_text=desc,
-                author_email=ticket.requester_email,
-                freshdesk_created_at=ticket.freshdesk_created_at,
+                author_email=want_author or "",
+                freshdesk_created_at=ts,
             )
             session.add(body_conv)
             session.commit()
-            session.refresh(body_conv)
-            conversations.insert(0, body_conv)
-            log.debug("ticket %d: synthesised ticket_body conversation", ticket.freshdesk_id)
+            log.debug(
+                "ticket %d: synthesised ticket description conversation (%s)",
+                ticket.freshdesk_id,
+                want_dir,
+            )
+    elif synth_existing:
+        session.delete(synth_existing)
+        session.commit()
+        log.debug("ticket %d: removed synthetic description (empty)", ticket.freshdesk_id)
 
+    conversations = list(
+        session.exec(
+            select(Conversation)
+            .where(Conversation.ticket_id == ticket.id)
+            .order_by(Conversation.freshdesk_created_at, Conversation.freshdesk_id)
+        ).all()
+    )
     return conversations
 
 
@@ -125,7 +180,7 @@ async def ensure_conversations(ticket: Ticket, session: Session) -> list[Convers
 def run_rule_classify(
     ticket: Ticket, conversations: list[Conversation], session: Session
 ) -> Classification:
-    body = "\n\n".join(c.body_text for c in conversations if c.direction in ("inbound", "ticket_body"))
+    body = "\n\n".join(ticket_description_body_parts(conversations))
     payload = ticket.raw_payload or {}
     eff_email = _effective_email(ticket, conversations)
     result = classify_ticket(
@@ -467,7 +522,7 @@ def _classify_rules(
     buyers_by_phone: dict[str, list[Buyer]],
     buyers_by_public_id: dict[str, Buyer] | None = None,
 ) -> Classification:
-    body = "\n\n".join(c.body_text for c in convs if c.direction == "inbound")
+    body = "\n\n".join(ticket_description_body_parts(convs))
     payload = ticket.raw_payload or {}
     email = _effective_email(ticket, convs)
     result = classify_ticket(

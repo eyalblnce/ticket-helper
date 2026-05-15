@@ -34,6 +34,31 @@ def web(
 
 
 @app.command()
+def poll(
+    interval: Annotated[
+        int,
+        typer.Option("--interval", "-i", help="Seconds between Freshdesk sync runs"),
+    ] = 90,
+) -> None:
+    """Run continuous Freshdesk ticket sync (same loop the web app used to embed).
+
+    Run this as a separate process alongside the web server, e.g.:
+
+        uv run ticket-helper poll
+
+    Or under systemd / cron with `ticket-helper sync` for periodic one-shot pulls.
+    """
+    import asyncio
+
+    from app.db import create_tables
+    from app.services.poller import run_poller
+
+    create_tables()
+    typer.echo(f"Poller starting (interval={interval}s). Press Ctrl+C to stop.")
+    asyncio.run(run_poller(interval_seconds=interval))
+
+
+@app.command()
 def sync(
     days: Annotated[int, typer.Option(help="Fetch tickets updated in the last N days")] = 1,
 ) -> None:
@@ -131,3 +156,45 @@ def classify(
     create_tables()
     count = asyncio.run(classify_all_unclassified(force=force))
     typer.echo(f"Done — {count} ticket(s) classified.")
+
+
+@app.command()
+def train(
+    since: Annotated[
+        str | None,
+        typer.Option(help="Only embed tickets updated in the last N days, e.g. '7d'"),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Discard previous run output and start fresh"),
+    ] = False,
+) -> None:
+    """Run the SOP induction pipeline on resolved tickets.
+
+    Embeds tickets, clusters them, synthesises per-cluster SOPs, validates
+    them, then writes proposals to the DB for review at /training.
+    """
+    from pathlib import Path
+
+    from app.db import create_tables
+    from app.services.trainer import run_pipeline
+
+    create_tables()
+
+    since_days: int | None = None
+    if since:
+        since_days = int(since.rstrip("d"))
+
+    run_dir = Path("data") / f"training/run_{datetime.utcnow().strftime('%Y%m%d_%H%M')}"
+
+    # Reuse the most recent existing run dir unless --force
+    if not force:
+        training_root = Path("data/training")
+        if training_root.exists():
+            runs = sorted(training_root.glob("run_*"), reverse=True)
+            if runs:
+                run_dir = runs[0]
+                typer.echo(f"Resuming existing run: {run_dir}")
+
+    typer.echo(f"Output: {run_dir}")
+    run_pipeline(run_dir, since_days=since_days, force=force)

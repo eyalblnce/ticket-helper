@@ -23,6 +23,15 @@ def _migrate() -> None:
         ("classification", "team",        "TEXT NOT NULL DEFAULT ''"),
     ]
     with engine.connect() as conn:
+        sa = __import__("sqlalchemy")
+        # Rename legacy synthetic ticket description direction (idempotent).
+        conn.execute(
+            sa.text(
+                "UPDATE conversation SET direction = 'ticket_description_inbound' "
+                "WHERE direction = 'ticket_body'"
+            )
+        )
+        conn.commit()
         for table, col, definition in additions:
             existing = [
                 row[1]

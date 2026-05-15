@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}SOP Proposals — Support Co-Pilot{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-xl font-semibold">SOP Proposals</h1>
+  <div class="flex gap-3 items-center">
+    <form method="get" class="flex gap-2 items-center">
+      {% if selected_run %}
+      <input type="hidden" name="run_id" value="{{ selected_run }}">
+      {% endif %}
+      <select name="status" onchange="this.form.submit()"
+              class="text-sm border border-gray-300 rounded px-2 py-1 bg-white">
+        {% for s in ["pending","approved","rejected","merged"] %}
+        <option value="{{ s }}" {% if s == selected_status %}selected{% endif %}>
+          {{ s|capitalize }} ({{ counts[s] }})
+        </option>
+        {% endfor %}
+      </select>
+    </form>
+    {% if all_runs|length > 1 %}
+    <form method="get" class="flex gap-2 items-center">
+      <input type="hidden" name="status" value="{{ selected_status }}">
+      <select name="run_id" onchange="this.form.submit()"
+              class="text-sm border border-gray-300 rounded px-2 py-1 bg-white">
+        <option value="">All runs</option>
+        {% for r in all_runs %}
+        <option value="{{ r }}" {% if r == selected_run %}selected{% endif %}>{{ r }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if not proposals %}
+<p class="text-gray-500 text-sm">No proposals with status "{{ selected_status }}".</p>
+{% else %}
+<div class="space-y-4" id="proposals-list">
+  {% for p in proposals %}
+    {% include "partials/_proposal_row.html" %}
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

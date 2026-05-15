@@ -98,7 +98,7 @@ scripts/
 - **Single container** — web UI and background poller run in the same process via lifespan task.
 - **Bulk classification** — `classify_all_unclassified()` loads all tickets, conversations, merchants, and buyers in ~5 queries then processes entirely in memory; batch-inserts results. Rules path: ~10s for 30k tickets.
 - **Paginated inbox** — 50 tickets per page; category/sender/status/team filters pushed to DB subqueries so only the current page is loaded.
-- **Ticket body synthesis** — Freshdesk's conversations API omits the original message (it lives in `ticket.description_text`). `ensure_conversations()` synthesises a `direction="ticket_body"` Conversation (stored with `freshdesk_id = -ticket_id`) so the first message appears in the thread and is included in classification. `list_tickets` is called with `include=description` so `description_text` is present in `raw_payload` at sync time — no extra API calls needed later.
+- **Ticket description synthesis** — Freshdesk's conversations API omits the opening body (it lives in `ticket.description_text`). `ensure_conversations()` synthesises a `Conversation` with `freshdesk_id = -ticket_id` and direction `ticket_description_inbound` or `ticket_description_outbound` (legacy DB rows may still read `ticket_body` until migrated). Provenance is deterministic: (A) Freshdesk ticket `source == 10` (Outbound Email) → support-side opening; (B) else if the earliest **non-private** conversation body matches the description (normalized whitespace; optional prefix match) → same inbound/outbound sense as that message, with `author_email` from `from_email`; (C) else default inbound using `requester_email`. Stale synthetic rows are updated when the ticket is opened again. `list_tickets` uses `include=description` so `description_text` is in `raw_payload` at sync time. Edge cases: edited descriptions, merges, or a first public message that is not the opening email can fall through to (C).
 - **Inline attachment images** — Freshdesk embeds images as signed JWT URLs (`attachment.freshdesk.com/inline/attachment?token=…`). They are publicly accessible (no auth needed) but tokens are short-lived, so we don't store or render them. Plain `description_text` is used instead.
 
 ## External Integrations
@@ -122,7 +122,7 @@ All write operations require explicit agent confirmation in the UI.
 ### ClassifierAgent
 One LLM call, no tools. Structured output: `category`, `urgency` (1–5), `sentiment`, `sender_type`, `entities` (order_id, invoice_id, etc.), `suggested_destination` (freshdesk_reply | balance_outbox).
 
-Classifies the **full conversation thread** including the synthesised `ticket_body` entry (the original customer message). Each message is labeled by direction (Customer / Support / Internal Note). Per-message cap: 1500 chars; total cap: 8000 chars.
+Classifies the **full conversation thread** including the synthesised ticket-description row (`ticket_description_inbound` / `ticket_description_outbound`, labeled Customer vs Support accordingly). Each message is labeled by direction (Customer / Support / Internal Note). Per-message cap: 1500 chars; total cap: 8000 chars.
 
 After classification, `assign_team()` (`app/services/rules.py`) derives the `team` field from category + buyer `is_suspended`. The buyer is resolved via email, phone, or `cf_buyervendor_id` — whichever matches first.
 

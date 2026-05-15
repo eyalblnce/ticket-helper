@@ -108,7 +108,14 @@ _agent = Agent(
 )
 
 
-_CONV_LABEL = {"inbound": "Customer", "outbound": "Support", "private_note": "Internal Note", "ticket_body": "Customer"}
+_CONV_LABEL = {
+    "inbound": "Customer",
+    "outbound": "Support",
+    "private_note": "Internal Note",
+    "ticket_body": "Customer",
+    "ticket_description_inbound": "Customer",
+    "ticket_description_outbound": "Support",
+}
 _PER_MSG_LIMIT = 1500
 _TOTAL_LIMIT = 8000
 

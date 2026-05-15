@@ -4,6 +4,23 @@ from typing import Any
 from sqlmodel import JSON, Column, Field, SQLModel
 
 
+class SopProposal(SQLModel, table=True):
+    __tablename__ = "sop_proposal"
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: str = Field(index=True)                  # e.g. "20260502_2130"
+    cluster_id: int = 0
+    cluster_label: str = ""                          # Haiku-generated label
+    proposed_category: str = ""                      # slug for use in classifier
+    cluster_size: int = 0
+    validation_score: float | None = None            # 0.0–1.0
+    sop_markdown: str = ""
+    sample_ticket_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = "pending"                          # pending | approved | rejected | merged
+    merged_into: str = ""                            # if merged, existing category slug
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    reviewed_at: datetime | None = None
+
+
 class Ticket(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     freshdesk_id: int = Field(unique=True, index=True)
@@ -36,7 +53,7 @@ class Conversation(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     freshdesk_id: int = Field(unique=True, index=True)
     ticket_id: int = Field(index=True, foreign_key="ticket.id")
-    direction: str = "inbound"   # inbound | outbound | private_note
+    direction: str = "inbound"   # inbound | outbound | private_note | ticket_description_inbound | ticket_description_outbound | ticket_body (legacy)
     body_text: str = ""
     author_email: str = ""
     freshdesk_created_at: datetime | None = None

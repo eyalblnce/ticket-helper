@@ -16,7 +16,7 @@ from app.services.freshdesk import FreshdeskClient, FreshdeskError
 
 log = logging.getLogger(__name__)
 
-POLL_INTERVAL = 90  # seconds
+DEFAULT_POLL_INTERVAL = 90  # seconds
 
 
 def _parse_dt(val: str | None) -> datetime | None:
@@ -118,9 +118,9 @@ async def sync_once(updated_since: datetime | None = None) -> int:
     return len(tickets)
 
 
-async def run_poller() -> None:
-    """Long-running background task. Called from FastAPI lifespan."""
-    log.info("poller starting")
+async def run_poller(interval_seconds: int = DEFAULT_POLL_INTERVAL) -> None:
+    """Long-running background task. Run from `ticket-helper poll`, not the web process."""
+    log.info("poller starting (interval=%ds)", interval_seconds)
     last_sync: datetime | None = None
 
     while True:
@@ -134,4 +134,4 @@ async def run_poller() -> None:
         except Exception:
             log.exception("unexpected poller error")
 
-        await asyncio.sleep(POLL_INTERVAL)
+        await asyncio.sleep(interval_seconds)

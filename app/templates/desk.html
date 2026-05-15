@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block title %}Desk — Support Co-Pilot{% endblock %}
+{% block main_width %}max-w-[1600px]{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-xl font-semibold">Desk
+    <span class="ml-2 text-sm font-normal text-gray-500">{{ total }} ticket{{ "s" if total != 1 }}</span>
+  </h1>
+  <div class="flex gap-3 text-sm">
+    <a href="/" class="text-blue-600 hover:underline">Inbox</a>
+    {% if selected_ticket %}
+    <a href="/tickets/{{ selected_ticket.freshdesk_id }}" class="text-blue-600 hover:underline">Classic ticket</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="flex gap-1 mb-3">
+  <a href="/desk?status=&q={{ filter_q }}&priority={{ filter_priority or '' }}&category={{ filter_category }}&sender_type={{ filter_sender_type }}&team={{ filter_team }}{% if selected_freshdesk_id %}&ticket_id={{ selected_freshdesk_id }}{% endif %}"
+    class="px-3 py-1.5 rounded text-sm font-medium {% if not filter_status %}bg-gray-900 text-white{% else %}bg-white text-gray-600 border border-gray-200 hover:bg-gray-50{% endif %}">All</a>
+  {% for val, label in status_labels.items() %}
+  <a href="/desk?status={{ val }}&q={{ filter_q }}&priority={{ filter_priority or '' }}&category={{ filter_category }}&sender_type={{ filter_sender_type }}&team={{ filter_team }}{% if selected_freshdesk_id %}&ticket_id={{ selected_freshdesk_id }}{% endif %}"
+    class="px-3 py-1.5 rounded text-sm font-medium {% if filter_status == val|string %}bg-gray-900 text-white{% else %}bg-white text-gray-600 border border-gray-200 hover:bg-gray-50{% endif %}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+<form method="get" action="/desk" class="bg-white border border-gray-200 rounded-lg shadow-sm p-3 mb-3 flex flex-wrap gap-2 items-end text-sm">
+  <input type="hidden" name="status" value="{{ filter_status }}">
+  {% if selected_freshdesk_id %}<input type="hidden" name="ticket_id" value="{{ selected_freshdesk_id }}">{% endif %}
+  <div class="flex flex-col gap-1">
+    <label class="text-xs text-gray-500">Search</label>
+    <input type="text" name="q" value="{{ filter_q }}" placeholder="Subject, email, #…" class="border rounded px-2 py-1 w-48">
+  </div>
+  <div class="flex flex-col gap-1">
+    <label class="text-xs text-gray-500">Priority</label>
+    <select name="priority" class="border rounded px-2 py-1">
+      <option value="">All</option>
+      {% for pv, pl in priority_labels.items() %}
+      <option value="{{ pv }}" {% if filter_priority == pv %}selected{% endif %}>{{ pl }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="flex flex-col gap-1">
+    <label class="text-xs text-gray-500">Category</label>
+    <select name="category" class="border rounded px-2 py-1">
+      <option value="">All</option>
+      {% for cat in all_categories %}
+      <option value="{{ cat }}" {% if filter_category == cat %}selected{% endif %}>{{ cat.replace("_", " ").title() }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="flex flex-col gap-1">
+    <label class="text-xs text-gray-500">Sender</label>
+    <select name="sender_type" class="border rounded px-2 py-1">
+      <option value="">All</option>
+      <option value="merchant" {% if filter_sender_type == "merchant" %}selected{% endif %}>Merchant</option>
+      <option value="buyer" {% if filter_sender_type == "buyer" %}selected{% endif %}>Buyer</option>
+      <option value="unknown" {% if filter_sender_type == "unknown" %}selected{% endif %}>Unknown</option>
+    </select>
+  </div>
+  <div class="flex flex-col gap-1">
+    <label class="text-xs text-gray-500">Team</label>
+    <select name="team" class="border rounded px-2 py-1">
+      <option value="">All</option>
+      {% for tm in all_teams %}
+      <option value="{{ tm }}" {% if filter_team == tm %}selected{% endif %}>{{ tm.replace("_", " ").title() }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit" class="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700">Filter</button>
+</form>
+
+<div class="flex flex-col lg:flex-row gap-4 items-start min-h-[480px]">
+
+  <div class="w-full lg:w-[42%] flex flex-col gap-3 min-w-0">
+    <div class="bg-white border border-gray-200 rounded-lg overflow-hidden max-h-56 overflow-y-auto">
+      <table class="w-full text-xs">
+        <thead class="bg-gray-50 border-b text-left text-gray-600">
+          <tr>
+            <th class="px-2 py-2">#</th>
+            <th class="px-2 py-2">Subject</th>
+            <th class="px-2 py-2 w-24">Cat</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for row in ticket_links %}
+          {% set t = row.ticket %}
+          {% set cl = classifications.get(t.id) %}
+          <tr class="hover:bg-gray-50 cursor-pointer {% if selected_freshdesk_id == t.freshdesk_id %}bg-blue-50{% endif %}"
+              hx-get="/desk/fragments/detail/{{ t.freshdesk_id }}"
+              hx-swap="none"
+              hx-push-url="{{ row.desk_url }}">
+            <td class="px-2 py-1.5 font-mono text-blue-600">{{ t.freshdesk_id }}</td>
+            <td class="px-2 py-1.5 text-gray-900 truncate max-w-[12rem]">{{ t.subject or "(no subject)" }}</td>
+            <td class="px-2 py-1.5">{% if cl %}<span class="text-gray-500">{{ cl.category[:12] }}</span>{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div id="desk-thread-panel" class="bg-white border border-gray-200 rounded-lg p-4 min-h-[200px]">
+      {% if selected_ticket %}
+      {% include "partials/_desk_thread_block.html" %}
+      {% else %}
+      <p class="text-sm text-gray-400">Select a ticket from the list above.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="w-full lg:flex-1 min-w-0 space-y-4" id="desk-right-stack">
+    {% if selected_ticket %}
+    <div id="desk-found-panel">
+      {% include "partials/_desk_found.html" %}
+    </div>
+    <div id="desk-treatment-panel">
+      {% include "partials/_desk_treatment.html" %}
+    </div>
+    {% else %}
+    <div class="bg-white border border-gray-200 rounded-lg p-8 text-center text-gray-400 text-sm">
+      Choose a ticket to see what we have on file and suggested treatment.
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if total_pages > 1 %}
+<div class="mt-4 text-sm text-gray-500 flex justify-between">
+  <span>Page {{ page }} of {{ total_pages }}</span>
+  <div class="flex gap-2">
+    {% if page > 1 %}
+    <a class="text-blue-600" href="/desk?{{ desk_qs_base }}&page={{ page - 1 }}{% if selected_freshdesk_id %}&ticket_id={{ selected_freshdesk_id }}{% endif %}">Prev</a>
+    {% endif %}
+    {% if page < total_pages %}
+    <a class="text-blue-600" href="/desk?{{ desk_qs_base }}&page={{ page + 1 }}{% if selected_freshdesk_id %}&ticket_id={{ selected_freshdesk_id }}{% endif %}">Next</a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

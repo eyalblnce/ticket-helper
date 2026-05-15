@@ -1,0 +1,74 @@
+<div id="proposal-{{ p.id }}"
+     class="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
+
+  {# Header row #}
+  <div class="flex items-start justify-between gap-4 mb-3">
+    <div>
+      <h2 class="font-semibold text-base">{{ p.cluster_label or p.proposed_category }}</h2>
+      <div class="flex gap-3 mt-1 text-xs text-gray-500">
+        <span>{{ p.cluster_size }} tickets</span>
+        {% if p.validation_score is not none %}
+          <span class="{% if p.validation_score >= 0.7 %}text-green-600{% else %}text-red-500{% endif %}">
+            {{ "%.0f"|format(p.validation_score * 100) }}% validation
+          </span>
+        {% endif %}
+        <span>run {{ p.run_id }}</span>
+        <span class="
+          {% if p.status == 'approved' %}text-green-700 font-medium
+          {% elif p.status == 'rejected' %}text-red-600 font-medium
+          {% elif p.status == 'merged' %}text-purple-700 font-medium
+          {% else %}text-gray-400{% endif %}">
+          {{ p.status }}{% if p.merged_into %} → {{ p.merged_into }}{% endif %}
+        </span>
+      </div>
+    </div>
+
+    {% if p.status == 'pending' %}
+    <div class="flex gap-2 shrink-0">
+      <button
+        hx-post="/training/{{ p.id }}/approve"
+        hx-target="#proposal-{{ p.id }}"
+        hx-swap="outerHTML"
+        class="px-3 py-1.5 text-sm bg-green-600 hover:bg-green-700 text-white rounded font-medium">
+        Approve
+      </button>
+      <button
+        hx-post="/training/{{ p.id }}/reject"
+        hx-target="#proposal-{{ p.id }}"
+        hx-swap="outerHTML"
+        class="px-3 py-1.5 text-sm bg-red-500 hover:bg-red-600 text-white rounded font-medium">
+        Reject
+      </button>
+      <button
+        onclick="document.getElementById('merge-form-{{ p.id }}').classList.toggle('hidden')"
+        class="px-3 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 text-white rounded font-medium">
+        Merge into…
+      </button>
+    </div>
+    {% endif %}
+  </div>
+
+  {# Merge form (hidden by default) #}
+  {% if p.status == 'pending' %}
+  <form id="merge-form-{{ p.id }}" class="hidden mb-3 flex gap-2 items-center"
+        hx-post="/training/{{ p.id }}/merge"
+        hx-target="#proposal-{{ p.id }}"
+        hx-swap="outerHTML">
+    <input type="text" name="merged_into" placeholder="existing category slug"
+           class="text-sm border border-gray-300 rounded px-2 py-1.5 flex-1 max-w-xs"
+           required>
+    <button type="submit"
+            class="px-3 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 text-white rounded font-medium">
+      Confirm merge
+    </button>
+  </form>
+  {% endif %}
+
+  {# SOP markdown preview — collapsible #}
+  <details class="mt-2">
+    <summary class="cursor-pointer text-sm text-blue-600 hover:text-blue-800 select-none">
+      View SOP
+    </summary>
+    <pre class="mt-3 text-xs bg-gray-50 border border-gray-200 rounded p-4 whitespace-pre-wrap overflow-auto max-h-96">{{ p.sop_markdown }}</pre>
+  </details>
+</div>

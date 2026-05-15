@@ -1,0 +1,77 @@
+<div class="bg-white border border-gray-200 rounded-lg p-4">
+  <h3 class="text-sm font-semibold text-gray-800 mb-3">Next steps &amp; treatment</h3>
+
+  {% if not classification %}
+  <p class="text-sm text-gray-500">Classify this ticket to see routing and SOPs.</p>
+  {% else %}
+
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm mb-4 pb-4 border-b border-gray-100">
+    <div>
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Suggested destination</p>
+      <p class="font-medium text-gray-900">{{ destination_labels.get(classification.suggested_destination, classification.suggested_destination) }}</p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Team</p>
+      {% if classification.team %}
+        {% set tcolor = team_color.get(classification.team, "gray") %}
+        <span class="px-2 py-0.5 rounded-full text-xs font-medium
+          {% if tcolor == 'amber' %}bg-amber-100 text-amber-700
+          {% elif tcolor == 'red' %}bg-red-100 text-red-700
+          {% elif tcolor == 'blue' %}bg-blue-100 text-blue-700
+          {% else %}bg-gray-100 text-gray-600{% endif %}">
+          {{ classification.team.replace("_", " ").title() }}
+        </span>
+      {% else %}<span class="text-gray-400">—</span>{% endif %}
+    </div>
+    <div>
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Urgency</p>
+      <p class="font-medium text-gray-900">{{ classification.urgency }} / 5</p>
+    </div>
+  </div>
+
+  {% if ranked_sops %}
+  <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">SOP playbook</p>
+  <div class="space-y-2 mb-4">
+    {% for item in ranked_sops %}
+    {% set p = item.proposal %}
+    <div class="border border-gray-200 rounded-lg p-3 {% if selected_sop and selected_sop.id == p.id %}ring-2 ring-blue-400 bg-blue-50/40{% endif %}">
+      <div class="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p class="text-sm font-medium text-gray-900">{{ p.cluster_label or ("Cluster " ~ p.cluster_id) }}</p>
+          <p class="text-xs text-gray-600 mt-1">{{ item.rationale }}</p>
+          <p class="text-xs text-gray-400 mt-0.5">{{ item.score_label }} · n={{ p.cluster_size }}</p>
+        </div>
+        {% if selected_sop and selected_sop.id == p.id %}
+        <span class="text-xs text-blue-700 font-medium shrink-0">Selected</span>
+        {% else %}
+        <button type="button"
+          class="text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 shrink-0"
+          hx-get="/desk/fragments/treatment/{{ selected_ticket.freshdesk_id }}?sop_id={{ p.id }}"
+          hx-swap="none">Use this SOP</button>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-sm text-gray-600 mb-2">No approved SOP in the library for category <code class="text-xs bg-gray-100 px-1 rounded">{{ classification.category }}</code>.</p>
+  <a href="/training" class="text-sm text-blue-600 hover:underline">Review SOP proposals</a>
+  {% endif %}
+
+  {% if selected_sop %}
+  <div class="mb-4">
+    <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Suggested steps (from SOP)</p>
+    {% if steps_markdown %}
+    <div class="text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded p-3 whitespace-pre-wrap font-sans">{{ steps_markdown }}</div>
+    {% else %}
+    <p class="text-xs text-gray-400 mb-2">No Steps / Checklist / Procedure section found in this SOP.</p>
+    {% endif %}
+    <details class="mt-2 text-sm">
+      <summary class="cursor-pointer text-gray-600 hover:text-gray-900">View full SOP (markdown)</summary>
+      <pre class="mt-2 text-xs bg-gray-50 border border-gray-200 rounded p-3 whitespace-pre-wrap overflow-auto max-h-64">{{ selected_sop.sop_markdown }}</pre>
+    </details>
+  </div>
+  {% endif %}
+
+  {% endif %}
+</div>

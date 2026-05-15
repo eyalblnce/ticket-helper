@@ -2,15 +2,14 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import join
 from sqlmodel import Session, func, select
 
 from app.db import get_session
 from app.models import Classification, Ticket
+from app.web_templates import templates
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 DAYS = 30
 

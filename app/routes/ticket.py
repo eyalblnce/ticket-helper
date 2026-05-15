@@ -1,17 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.requests import Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
 from app.config import settings
 from app.db import get_session
 from app.models import Classification, Conversation, Ticket
 from app.services.classify_task import ensure_conversations, run_classify, run_rule_classify
+from app.services.desk_context import desk_thread_section_title
+from app.services.freshdesk_constants import ticket_source_label_from_raw_payload
 from app.services.reference_lookup import find_buyer_by_public_id, find_merchant_by_public_id
+from app.web_templates import templates
 
 router = APIRouter()
-templates = Jinja2Templates(directory="app/templates")
 
 FRESHDESK_STATUS = {2: "Open", 3: "Pending", 4: "Resolved", 5: "Closed"}
 FRESHDESK_PRIORITY = {1: "Low", 2: "Medium", 3: "High", 4: "Urgent"}
@@ -135,6 +136,8 @@ def _ctx(
         "cf_buyervendor_id": cf.get("cf_buyervendor_id") or "",
         "db_buyer": db_buyer,
         "db_merchant": db_merchant,
+        "thread_section_title": desk_thread_section_title(ticket, conversations),
+        "ticket_source_label": ticket_source_label_from_raw_payload(ticket.raw_payload),
     }
 
 
